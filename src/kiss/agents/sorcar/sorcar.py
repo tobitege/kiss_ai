@@ -95,6 +95,17 @@ def _clean_llm_output(text: str) -> str:
     return text.strip().strip('"').strip("'")
 
 
+def _resolve_requested_file_path(requested_path: str, work_dir: str) -> str:
+    """Resolve a user-provided file path against the current work directory.
+
+    Accept absolute paths across platforms (including Windows drive/UNC paths)
+    and resolve relative paths under work_dir.
+    """
+    if os.path.isabs(requested_path):
+        return os.path.abspath(requested_path)
+    return os.path.abspath(os.path.join(work_dir, requested_path))
+
+
 def _generate_commit_msg(diff_text: str, *, detailed: bool = False) -> str:
     if detailed:
         prompt = (
@@ -569,6 +580,8 @@ def run_chatbot(
 
             printer._thread_local.stop_event = None
             chat_events = printer.stop_recording()
+            _append_task_to_md(task, result_text)
+            should_finalize = False
             with running_lock:
                 if agent_thread is not current_thread:
                     # Stopped externally; stop_agent already broadcast
@@ -1125,7 +1138,8 @@ def run_chatbot(
         rel = body.get("path", "").strip()
         if not rel:
             return JSONResponse({"error": "No path"}, status_code=400)
-        full = rel if rel.startswith("/") else os.path.join(actual_work_dir, rel)
+        # Use OS-aware absolute-path detection so Windows paths like C:\... work.
+        full = _resolve_requested_file_path(rel, actual_work_dir)
         if not os.path.isfile(full):
             return JSONResponse({"error": "File not found"}, status_code=404)
         pending = os.path.join(cs_data_dir, "pending-open.json")
