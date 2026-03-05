@@ -27,6 +27,10 @@ Implementation note:
 
 - Sorcar open-file endpoint now uses OS-aware absolute-path detection (`os.path.isabs`),
   so Windows paths like `C:\repo\file.py` are treated as absolute paths.
+- Windows drive paths in Git-Bash/WSL forms are normalized before file operations:
+  - `/c/repo/file.py`
+  - `/mnt/c/repo/file.py`
+  map to `C:\repo\file.py`.
 - `read_project_file()` now normalizes `\` to `/`, so Windows-style relative paths are accepted.
 
 ## Tools You May Need
@@ -209,6 +213,20 @@ Then open:
 KISS/Sorcar checks for `code-server` on `PATH` and uses it automatically when present.
 If not found, Sorcar still runs but shows the editor fallback panel.
 
+### Troubleshooting: Explorer shows `ENOPRO` / no file system provider
+
+If code-server Explorer shows:
+
+- `Unable to resolve workspace folder (ENOPRO: No file system provider found ...)`
+
+on Windows, the folder query must use a leading slash before the drive letter:
+
+- correct: `folder=/C:/github/kiss_ai`
+- incorrect: `folder=C:/github/kiss_ai` (can be misparsed as URI scheme `c:`)
+- incorrect: `folder=file:///C:/github/kiss_ai`
+
+Sorcar now generates the correct Windows form automatically.
+
 ## Recommended Windows Setup
 
 1. Install Python and `uv`.
@@ -222,4 +240,6 @@ If not found, Sorcar still runs but shows the editor fallback panel.
 ## Notes
 
 - `UsefulTools.Edit` uses a Python fallback path on Windows for robust file editing behavior.
+- Sorcar code-server restart handling on Windows uses native process/port tooling (`netstat` + `taskkill`),
+  so no `lsof` installation is required.
 - CI now includes `windows-latest` and runs `uv run check`.
