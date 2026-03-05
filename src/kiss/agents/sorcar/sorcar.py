@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import http.server
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import sys
 import threading
 import time
 import types
+import urllib.parse
 import webbrowser
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -54,6 +56,7 @@ from kiss.agents.sorcar.task_history import (
     _set_latest_chat_events,
 )
 from kiss.core.kiss_agent import KISSAgent
+from kiss.core.models import model_info as model_info_module
 from kiss.core.models.model_info import (
     _OPENAI_PREFIXES,
     MODEL_INFO,
@@ -62,6 +65,25 @@ from kiss.core.models.model_info import (
 from kiss.core.relentless_agent import RelentlessAgent
 
 logger = logging.getLogger(__name__)
+
+try:
+    from kiss.core.models.codex_oauth import (
+        CODEX_OAUTH_CALLBACK_PORT,
+        CODEX_OAUTH_REDIRECT_URI,
+        OpenAICodexOAuthManager,
+        build_authorization_url,
+        generate_code_challenge,
+        generate_code_verifier,
+        generate_oauth_state,
+    )
+except ImportError:
+    CODEX_OAUTH_CALLBACK_PORT = 1455
+    CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+    OpenAICodexOAuthManager = None  # type: ignore[assignment,misc]
+    build_authorization_url = None  # type: ignore[assignment]
+    generate_code_challenge = None  # type: ignore[assignment]
+    generate_code_verifier = None  # type: ignore[assignment]
+    generate_oauth_state = None  # type: ignore[assignment]
 
 _FAST_MODEL = "gemini-2.0-flash"
 _COMMIT_MODEL = "gemini-2.0-flash"
@@ -104,6 +126,25 @@ def _resolve_requested_file_path(requested_path: str, work_dir: str) -> str:
     if os.path.isabs(requested_path):
         return os.path.abspath(requested_path)
     return os.path.abspath(os.path.join(work_dir, requested_path))
+
+
+def _clear_codex_auth_caches() -> None:
+    """Clear cached Codex auth checks so UI status updates immediately."""
+    for fn in (
+        model_info_module._is_codex_cli_auth_available,
+        model_info_module._is_codex_native_auth_available,
+    ):
+        clear = getattr(fn, "cache_clear", None)
+        if callable(clear):
+            clear()
+
+
+def _mask_auth_id(value: str | None) -> str | None:
+    if not value:
+        return None
+    if len(value) <= 8:
+        return value
+    return f"{value[:4]}...{value[-4:]}"
 
 
 def _generate_commit_msg(diff_text: str, *, detailed: bool = False) -> str:
@@ -182,8 +223,15 @@ def run_chatbot(
     user_action_event: threading.Event | None = None
     user_question_event: threading.Event | None = None
     user_question_answer: str = ""
+    proposed_tasks: list[str] = _load_proposals()
+    proposed_lock = threading.Lock()
     last = _load_last_model()
     selected_model = last if last and last not in _INTERNAL_MODELS else default_model
+    oauth_lock = threading.Lock()
+    oauth_pending: dict[str, Any] | None = None
+    oauth_last_error = ""
+    oauth_callback_server: http.server.ThreadingHTTPServer | None = None
+    oauth_callback_thread: threading.Thread | None = None
 
     # Clean up stale code-server data directories synchronously at startup
     _cleanup_stale_cs_dirs()
@@ -467,6 +515,7 @@ def run_chatbot(
 
     threading.Thread(target=_watch_periodic, daemon=True).start()
 
+<<<<<<< HEAD
     def _wait_for_user_browser(instruction: str, url: str) -> None:
         nonlocal user_action_event
         event = threading.Event()
@@ -501,6 +550,143 @@ def run_chatbot(
         user_question_event = None
         user_question_answer = ""
         return answer
+=======
+    def _oauth_html(title: str, message: str, ok: bool) -> bytes:
+        color = "#10a37f" if ok else "#d9534f"
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>{title}</title>"
+            "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
+            f"background:{color};color:white;display:flex;align-items:center;justify-content:center;"
+            "height:100vh;margin:0}div{max-width:640px;padding:24px;text-align:center}"
+            "h1{margin:0 0 8px 0;font-size:28px}p{margin:0;opacity:.95}</style>"
+            "</head><body><div>"
+            f"<h1>{title}</h1><p>{message}</p>"
+            "</div><script>setTimeout(function(){window.close();},3500);</script></body></html>"
+        ).encode()
+
+    def _shutdown_oauth_callback_server() -> None:
+        nonlocal oauth_callback_server, oauth_callback_thread
+        server = oauth_callback_server
+        oauth_callback_server = None
+        oauth_callback_thread = None
+        if server is None:
+            return
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        try:
+            server.server_close()
+        except Exception:
+            pass
+
+    def _ensure_oauth_callback_server() -> tuple[bool, str]:
+        nonlocal oauth_callback_server, oauth_callback_thread, oauth_pending, oauth_last_error
+        if oauth_callback_thread is not None and oauth_callback_thread.is_alive():
+            return True, ""
+        if OpenAICodexOAuthManager is None:
+            return False, "Native OAuth manager is unavailable."
+
+        class _OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                nonlocal oauth_pending, oauth_last_error
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/auth/callback":
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Not Found")
+                    return
+                params = urllib.parse.parse_qs(parsed.query)
+                error = params.get("error", [""])[0].strip()
+                code = params.get("code", [""])[0].strip()
+                state = params.get("state", [""])[0].strip()
+
+                with oauth_lock:
+                    pending = dict(oauth_pending) if oauth_pending else None
+
+                def _finish(status: int, title: str, message: str, ok: bool) -> None:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(_oauth_html(title, message, ok))
+                    printer.broadcast({"type": "auth_updated"})
+                    threading.Thread(target=_shutdown_oauth_callback_server, daemon=True).start()
+
+                if pending is None:
+                    with oauth_lock:
+                        oauth_last_error = "No pending login flow. Start login from the auth panel."
+                    _finish(400, "No Pending Login", oauth_last_error, False)
+                    return
+                if error:
+                    with oauth_lock:
+                        oauth_pending = None
+                        oauth_last_error = f"OAuth error: {error}"
+                    _finish(400, "Authentication Failed", oauth_last_error, False)
+                    return
+                if not code or not state:
+                    with oauth_lock:
+                        oauth_pending = None
+                        oauth_last_error = "Missing OAuth code/state in callback."
+                    _finish(400, "Authentication Failed", oauth_last_error, False)
+                    return
+                if state != str(pending.get("state", "")):
+                    with oauth_lock:
+                        oauth_pending = None
+                        oauth_last_error = "OAuth state mismatch. Please retry login."
+                    _finish(400, "Authentication Failed", oauth_last_error, False)
+                    return
+
+                manager = OpenAICodexOAuthManager()
+                token = manager.exchange_authorization_code(
+                    code,
+                    str(pending.get("code_verifier", "")),
+                    redirect_uri=CODEX_OAUTH_REDIRECT_URI,
+                )
+                if not token:
+                    with oauth_lock:
+                        oauth_pending = None
+                        oauth_last_error = "Token exchange failed. Please retry login."
+                    _finish(500, "Authentication Failed", oauth_last_error, False)
+                    return
+
+                with oauth_lock:
+                    oauth_pending = None
+                    oauth_last_error = ""
+                _clear_codex_auth_caches()
+                _finish(
+                    200,
+                    "Authentication Successful",
+                    "KISS is now authenticated with your ChatGPT plan. You can close this window.",
+                    True,
+                )
+
+        try:
+            server = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", CODEX_OAUTH_CALLBACK_PORT),
+                _OAuthCallbackHandler,
+            )
+        except OSError as exc:
+            return False, (
+                "Cannot start OAuth callback server on "
+                f"127.0.0.1:{CODEX_OAUTH_CALLBACK_PORT} ({exc})."
+            )
+
+        oauth_callback_server = server
+
+        def _run_server() -> None:
+            try:
+                server.serve_forever(poll_interval=0.5)
+            except Exception:
+                pass
+
+        oauth_callback_thread = threading.Thread(target=_run_server, daemon=True)
+        oauth_callback_thread.start()
+        return True, ""
+>>>>>>> c03cfd1 (feat(codex): add native OAuth auth flow and Sorcar auth controls)
 
     def run_agent_thread(
         task: str,
@@ -662,6 +848,8 @@ def run_chatbot(
         if was_merging:  # pragma: no cover – cleanup during active merge
             _restore_merge_files(cs_data_dir, actual_work_dir)
         stop_agent()
+        if cs_proc and cs_proc.poll() is None:  # pragma: no cover – cleanup timing
+        _shutdown_oauth_callback_server()
         if cs_proc and cs_proc.poll() is None:  # pragma: no cover – cleanup timing
             try:
                 os.killpg(cs_proc.pid, 15)  # SIGTERM to process group
@@ -1112,6 +1300,210 @@ def run_chatbot(
         _schedule_shutdown()
         return JSONResponse({"status": "ok"})
 
+    def _auth_status_payload(model_name: str) -> dict[str, Any]:
+        nonlocal oauth_pending, oauth_last_error
+        requested_model = model_name or selected_model
+        keys = config_module.DEFAULT_CONFIG.agent.api_keys
+        is_openai_model = (
+            requested_model.startswith(_OPENAI_PREFIXES)
+            and not requested_model.startswith("openai/gpt-oss")
+        )
+        codex_native_available = model_info_module._is_codex_native_auth_available()
+        codex_cli_available = model_info_module._is_codex_cli_auth_available()
+        codex_auth_available = codex_native_available or codex_cli_available
+
+        preferred_auth = "n/a"
+        codex_subscription_model = False
+        if is_openai_model:
+            preferred_auth = model_info_module._resolve_openai_auth_mode(
+                requested_model,
+                keys.OPENAI_API_KEY,
+            )
+            codex_subscription_model = model_info_module._is_codex_subscription_model(
+                requested_model
+            )
+
+        codex_transport = (
+            model_info_module._resolve_codex_transport()
+            if codex_auth_available
+            else "none"
+        )
+        login_pending = False
+        with oauth_lock:
+            if oauth_pending:
+                expires_at = float(oauth_pending.get("expires_at", 0.0) or 0.0)
+                if expires_at and time.time() > expires_at:
+                    oauth_pending = None
+                    oauth_last_error = "Login timed out. Please start login again."
+                else:
+                    login_pending = True
+
+        codex_account_id: str | None = None
+        codex_cache_file = str(Path("~/.kiss/codex_oauth.json").expanduser())
+        codex_source_file = str(Path("~/.codex/auth.json").expanduser())
+        if OpenAICodexOAuthManager is not None:
+            try:
+                manager = OpenAICodexOAuthManager()
+                codex_account_id = manager.get_account_id()
+                codex_cache_file = str(manager.cache_file)
+                codex_source_file = str(manager.source_file)
+            except Exception:
+                pass
+
+        return {
+            "model": requested_model,
+            "is_openai_model": is_openai_model,
+            "preferred_auth": preferred_auth,
+            "codex_subscription_model": codex_subscription_model,
+            "openai_api_key_configured": bool(keys.OPENAI_API_KEY),
+            "codex_auth_available": codex_auth_available,
+            "codex_native_available": codex_native_available,
+            "codex_cli_available": codex_cli_available,
+            "codex_transport": codex_transport,
+            "login_pending": login_pending,
+            "login_error": oauth_last_error,
+            "oauth_callback_port": CODEX_OAUTH_CALLBACK_PORT,
+            "forced_auth": os.environ.get("KISS_OPENAI_AUTH", "").strip().lower() or "auto",
+            "forced_transport": os.environ.get("KISS_CODEX_TRANSPORT", "").strip().lower()
+            or "auto",
+            "codex_account_id": _mask_auth_id(codex_account_id),
+            "codex_cache_file": codex_cache_file,
+            "codex_source_file": codex_source_file,
+        }
+
+    async def auth_endpoint(request: Request) -> JSONResponse:
+        nonlocal oauth_pending, oauth_last_error
+        if request.method == "GET":
+            model_name = request.query_params.get("model", "").strip()
+            return JSONResponse(_auth_status_payload(model_name))
+
+        body = await request.json()
+        action = str(body.get("action", "refresh")).strip().lower()
+        model_name = str(body.get("model", "")).strip()
+        if action not in {"refresh", "logout", "login", "cancel_login"}:
+            return JSONResponse({"error": "Invalid action"}, status_code=400)
+
+        result: dict[str, Any] = {"status": "ok", "action": action}
+
+        # Always clear caches first so status reflects filesystem/env changes immediately.
+        _clear_codex_auth_caches()
+
+        if action == "cancel_login":
+            with oauth_lock:
+                oauth_pending = None
+                oauth_last_error = ""
+            _shutdown_oauth_callback_server()
+
+        if action == "login":
+            if (
+                OpenAICodexOAuthManager is None
+                or generate_code_verifier is None
+                or generate_code_challenge is None
+                or generate_oauth_state is None
+                or build_authorization_url is None
+            ):
+                result["status"] = "error"
+                result["error"] = "Native OAuth login is unavailable in this build."
+                result["auth"] = _auth_status_payload(model_name)
+                return JSONResponse(result, status_code=500)
+            code_verifier = generate_code_verifier()
+            code_challenge = generate_code_challenge(code_verifier)
+            state = generate_oauth_state()
+            login_url = build_authorization_url(
+                code_challenge,
+                state,
+                originator="kiss-ai",
+                redirect_uri=CODEX_OAUTH_REDIRECT_URI,
+            )
+
+            with oauth_lock:
+                oauth_pending = {
+                    "state": state,
+                    "code_verifier": code_verifier,
+                    "created_at": time.time(),
+                    "expires_at": time.time() + 300.0,
+                }
+                oauth_last_error = ""
+
+            started, start_error = _ensure_oauth_callback_server()
+            if not started:
+                with oauth_lock:
+                    oauth_pending = None
+                    oauth_last_error = start_error
+                result["status"] = "error"
+                result["error"] = start_error
+                result["auth"] = _auth_status_payload(model_name)
+                return JSONResponse(result, status_code=500)
+            result["login_url"] = login_url
+            result["callback_port"] = CODEX_OAUTH_CALLBACK_PORT
+
+        if action == "logout":
+            codex_path = shutil.which("codex")
+            logout_summary = {"attempted": False, "success": False, "message": ""}
+            if codex_path:
+                logout_summary["attempted"] = True
+                try:
+                    proc = subprocess.run(
+                        [codex_path, "logout"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                    output = (proc.stdout or proc.stderr or "").strip()
+                    logout_summary["success"] = proc.returncode == 0
+                    logout_summary["message"] = output
+                except (OSError, subprocess.SubprocessError) as exc:
+                    logout_summary["message"] = str(exc)
+            else:
+                logout_summary["message"] = "Codex CLI not found on PATH."
+
+            # Remove KISS-managed OAuth cache so native transport is immediately unauthenticated.
+            removed_cache_files: list[str] = []
+            cache_candidates = {str(Path("~/.kiss/codex_oauth.json").expanduser())}
+            source_candidates = {str(Path("~/.codex/auth.json").expanduser())}
+            if OpenAICodexOAuthManager is not None:
+                try:
+                    manager = OpenAICodexOAuthManager()
+                    cache_candidates.add(str(manager.cache_file))
+                    source_candidates.add(str(manager.source_file))
+                except Exception:
+                    pass
+            auth_file_env = os.environ.get("KISS_CODEX_AUTH_FILE")
+            if auth_file_env:
+                source_candidates.add(str(Path(auth_file_env).expanduser()))
+            for cache_file in sorted(cache_candidates):
+                try:
+                    path = Path(cache_file)
+                    if path.exists():
+                        path.unlink()
+                        removed_cache_files.append(cache_file)
+                except OSError:
+                    continue
+            removed_source_files: list[str] = []
+            for source_file in sorted(source_candidates):
+                try:
+                    path = Path(source_file)
+                    if path.exists():
+                        path.unlink()
+                        removed_source_files.append(source_file)
+                except OSError:
+                    continue
+
+            result["logout"] = logout_summary
+            result["removed_cache_files"] = removed_cache_files
+            result["removed_source_files"] = removed_source_files
+            with oauth_lock:
+                oauth_pending = None
+                oauth_last_error = ""
+            _shutdown_oauth_callback_server()
+
+            # Clear once more in case logout modified auth state between checks.
+            _clear_codex_auth_caches()
+
+        result["auth"] = _auth_status_payload(model_name)
+        return JSONResponse(result)
+
     async def focus_chatbox(request: Request) -> JSONResponse:
         printer.broadcast({"type": "focus_chatbox"})
         return JSONResponse({"status": "ok"})
@@ -1313,6 +1705,9 @@ def run_chatbot(
 
             Route("/models", models_endpoint),
             Route("/select-model", select_model_endpoint, methods=["POST"]),
+            Route("/auth", auth_endpoint, methods=["GET", "POST"]),
+            Route("/select-model", select_model_endpoint, methods=["POST"]),
+            Route("/auth", auth_endpoint, methods=["GET", "POST"]),
             Route("/theme", theme),
         ]
     )

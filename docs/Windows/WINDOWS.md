@@ -36,10 +36,74 @@ No extra tool is required for basic Python framework usage.
 Install these tools only if you need their related features:
 
 - Git for Windows (recommended): enables Git Bash, which improves Bash tool compatibility.
+- Codex CLI (optional fallback): not required for native ChatGPT-plan login in Sorcar;
+  still useful as fallback transport/login path.
 - code-server: required for Sorcar embedded editor panel.
 - Playwright browsers: required for browser automation features.
   - install with: `uv run playwright install`
 - Docker Desktop: required for Docker-based agent workflows.
+
+## OpenAI via ChatGPT/Codex Login (No OPENAI_API_KEY)
+
+KISS can run OpenAI-family models using ChatGPT/Codex subscription auth.
+
+Preferred path (no Codex CLI required):
+
+- Open Sorcar auth panel and click `Login plan`.
+- Complete browser OAuth flow.
+- Sorcar receives callback on `http://localhost:1455/auth/callback` and stores tokens in:
+  - `~/.kiss/codex_oauth.json`
+- If login cannot start, check whether local port `1455` is already in use.
+
+Optional fallback path:
+
+- If Codex CLI is installed and logged in (`codex login status`), KISS can also use that auth source.
+
+KISS now prefers native OAuth token usage with direct requests to:
+
+- `https://chatgpt.com/backend-api/codex/responses`
+
+and keeps Codex CLI execution as an automatic fallback.
+
+Native token source behavior:
+
+- KISS reads/writes its own cache at `~/.kiss/codex_oauth.json`.
+- On first use, KISS bootstraps credentials from Codex CLI auth file:
+  - `%USERPROFILE%\.codex\auth.json`
+- You can override the source auth file with:
+  - `KISS_CODEX_AUTH_FILE=<path-to-auth.json>`
+
+### Setup
+
+1. Verify Codex CLI:
+   - `codex --version`
+1. Login (browser flow):
+   - `codex login`
+1. Verify auth:
+   - `codex login status`
+
+### Routing behavior in KISS
+
+- KISS treats ChatGPT/Codex auth as a subset of OpenAI model IDs (overlap list), not a full API mirror.
+- When both auth sources exist:
+  - overlap model IDs use ChatGPT/Codex auth first,
+  - API-only model IDs use `OPENAI_API_KEY`.
+- If `OPENAI_API_KEY` is not set, only overlap-model IDs are exposed for OpenAI-family routing.
+- To force auth mode globally:
+  - `KISS_OPENAI_AUTH=codex` (prefer Codex subscription auth)
+  - `KISS_OPENAI_AUTH=api` (force API key path)
+- To force transport backend when `KISS_OPENAI_AUTH=codex`:
+  - `KISS_CODEX_TRANSPORT=native` (native OAuth + direct backend API)
+  - `KISS_CODEX_TRANSPORT=cli` (force Codex CLI execution)
+- Sorcar UI now includes an **Authentication** panel button. It shows active auth routing for the selected model and supports refresh/logout.
+
+PowerShell examples:
+
+```powershell
+$env:KISS_OPENAI_AUTH = "codex"
+$env:KISS_CODEX_TRANSPORT = "native"
+uv run sorcar .
+```
 
 ## code-server on Windows
 

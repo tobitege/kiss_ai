@@ -48,5 +48,27 @@ def test_input_actions_no_shrink():
     assert "flex-shrink:0" in block
 
 
+def test_auth_button_and_panel_exist():
+    html = _build_html("Test", "", "/tmp")
+    assert 'id="auth-btn"' in html
+    assert 'id="auth-panel"' in html
+    assert 'id="auth-refresh-btn"' in html
+    assert 'id="auth-login-btn"' in html
+    assert 'id="auth-logout-btn"' in html
+
+
+def test_auth_panel_js_uses_auth_endpoint():
+    assert "function toggleAuthPanel()" in CHATBOT_JS
+    assert "fetch('/auth?model='" in CHATBOT_JS
+    assert "fetch('/auth',{" in CHATBOT_JS
+    assert "loadAuthStatus('login')" in CHATBOT_JS
+    assert "loadAuthStatus('logout')" in CHATBOT_JS
+    assert "window.open(d.login_url" in CHATBOT_JS
+
+
+def test_model_vendor_groups_chatgpt_under_openai():
+    assert "^(chatgpt|gpt|o[134]|codex|computer-use)" in CHATBOT_JS
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
