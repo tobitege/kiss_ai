@@ -63,6 +63,21 @@ def _detect_shell_prefix(
     return [shell, "-c"]
 
 
+def _normalize_windows_drive_path(path: str) -> str:
+    """Normalize Git-Bash/WSL-style Windows drive paths to native Windows format."""
+    if os.name != "nt":
+        return path
+    normalized = path.replace("\\", "/")
+    m = re.match(r"^/(?:mnt/)?([a-zA-Z])(?:/(.*))?$", normalized)
+    if not m:
+        return path
+    drive = m.group(1).upper()
+    rest = m.group(2) or ""
+    if not rest:
+        return f"{drive}:{os.sep}"
+    return f"{drive}:{os.sep}{rest.replace('/', os.sep)}"
+
+
 EDIT_SCRIPT = r"""
 #!/usr/bin/env bash
 #
@@ -148,7 +163,7 @@ OCCURRENCE_COUNT=$(python3 -c "
 import os
 file_path = os.environ['EDIT_FILE_PATH']
 old_string = os.environ['EDIT_OLD_STRING']
-with open(file_path, 'r') as f:
+with open(file_path, 'r', newline='') as f:
     content = f.read()
 print(content.count(old_string))
 ")
@@ -188,13 +203,13 @@ file_path = os.environ['EDIT_FILE_PATH']
 old_string = os.environ['EDIT_OLD_STRING']
 new_string = os.environ['EDIT_NEW_STRING']
 count = int(os.environ['EDIT_REPLACE_COUNT']) if os.environ['EDIT_REPLACE_COUNT'] else -1
-with open(file_path, 'r') as f:
+with open(file_path, 'r', newline='') as f:
     content = f.read()
 if count >= 0:
     content = content.replace(old_string, new_string, count)
 else:
     content = content.replace(old_string, new_string)
-with open(file_path, 'w') as f:
+with open(file_path, 'w', newline='') as f:
     f.write(content)
 "
 
@@ -241,7 +256,8 @@ def _main() -> None:
         print("Error: new_string must be different from old_string", file=sys.stderr)
         sys.exit(1)
 
-    content = file_path.read_text()
+    with file_path.open("r", newline="") as f:
+        content = f.read()
     occurrence_count = content.count(old_string)
 
     print(f"File: {file_path}")
@@ -268,7 +284,8 @@ def _main() -> None:
         updated = content.replace(old_string, new_string, 1)
         replaced_count = 1
 
-    file_path.write_text(updated)
+    with file_path.open("w", newline="") as f:
+        f.write(updated)
 
     if replaced_count == 1:
         print("Successfully replaced 1 occurrence")
@@ -332,7 +349,7 @@ def _strip_heredocs(command: str) -> str:
     so that heredoc body text is not parsed as command arguments.
     """
     return re.sub(
-        r"<<-?\s*'?\"?(\w+)'?\"?\s*\n.*?\n\s*\1\b",
+        r"<<-?\s*'?\"?(\w+)'?\"?\s*\r?\n.*?\r?\n\s*\1\b",
         "",
         command,
         flags=re.DOTALL,
@@ -362,8 +379,9 @@ class UsefulTools:
             max_lines: Maximum number of lines to return.
         """
         try:
-            resolved = Path(file_path).resolve()
-            text = resolved.read_text()
+            resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
+            with resolved.open("r", newline="") as f:
+                text = f.read()
             lines = text.splitlines(keepends=True)
             if len(lines) > max_lines:
                 return (
@@ -387,9 +405,10 @@ class UsefulTools:
             content: The full content to write to the file.
         """
         try:
-            resolved = Path(file_path).resolve()
+            resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
             resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(content)
+            with resolved.open("w", newline="") as f:
+                f.write(content)
             return f"Successfully wrote {len(content)} bytes to {file_path}"
         except Exception as e:
             logger.debug("Exception caught", exc_info=True)
@@ -416,7 +435,7 @@ class UsefulTools:
             The output of the edit operation.
         """
 
-        resolved = Path(file_path).resolve()
+        resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
         replace_all_str = "true" if replace_all else "false"
 
         # Windows commonly lacks bash; run a Python edit helper instead.

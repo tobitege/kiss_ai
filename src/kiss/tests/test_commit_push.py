@@ -94,6 +94,36 @@ def test_resolve_requested_file_path_windows_absolute_like():
             assert resolved == os.path.abspath(os.path.join(tmpdir, win_abs))
 
 
+def test_resolve_requested_file_path_git_bash_style_drive_path():
+    """Git-Bash style drive paths (/c/...) should normalize to native Windows absolute paths."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        git_bash_abs = "/c/Users/Test/file.txt"
+        resolved = _resolve_requested_file_path(git_bash_abs, tmpdir)
+        if os.name == "nt":
+            assert resolved.lower() == os.path.abspath(r"C:\Users\Test\file.txt").lower()
+        else:
+            assert resolved == os.path.abspath(git_bash_abs)
+
+
+def test_resolve_requested_file_path_wsl_mnt_drive_path():
+    """WSL-style drive paths (/mnt/c/...) should also normalize on Windows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wsl_abs = "/mnt/c/Users/Test/file.txt"
+        resolved = _resolve_requested_file_path(wsl_abs, tmpdir)
+        if os.name == "nt":
+            assert resolved.lower() == os.path.abspath(r"C:\Users\Test\file.txt").lower()
+        else:
+            assert resolved == os.path.abspath(wsl_abs)
+
+
+def test_resolve_requested_file_path_drive_like_without_leading_slash_is_relative():
+    """`c/...` stays relative; only `/c/...` or `C:\\...` is treated as drive-absolute."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        drive_like_relative = "c/temp/test.txt"
+        resolved = _resolve_requested_file_path(drive_like_relative, tmpdir)
+        assert resolved == os.path.abspath(os.path.join(tmpdir, drive_like_relative))
+
+
 def test_git_commit_with_kiss_sorcar_attribution():
     """Integration test: a real git commit uses KISS Sorcar as both author and committer."""
     with tempfile.TemporaryDirectory() as repo:
