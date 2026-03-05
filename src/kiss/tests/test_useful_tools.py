@@ -34,6 +34,14 @@ def _write_text_cmd(path: Path, text: str) -> str:
     return _py_cmd(f"from pathlib import Path; Path({path.as_posix()!r}).write_text({text!r})")
 
 
+def _to_git_bash_path(path: Path) -> str:
+    resolved = str(path.resolve())
+    drive, tail = os.path.splitdrive(resolved)
+    if not drive:
+        return resolved.replace("\\", "/")
+    return f"/{drive[0].lower()}{tail.replace('\\', '/')}"
+
+
 @pytest.fixture
 def temp_test_dir():
     test_dir = Path(tempfile.mkdtemp()).resolve()
@@ -178,6 +186,65 @@ class TestUsefulTools:
         result = ut.Write(str(subdir), "content")
         assert "Error:" in result
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path normalization behavior")
+    def test_write_accepts_git_bash_style_drive_path(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "git_bash_write.txt"
+        result = ut.Write(_to_git_bash_path(target), "hello")
+        assert "Successfully wrote" in result
+        assert target.read_text() == "hello"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path normalization behavior")
+    def test_read_accepts_git_bash_style_drive_path(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "git_bash_read.txt"
+        target.write_text("from git bash path")
+        result = ut.Read(_to_git_bash_path(target))
+        assert result == "from git bash path"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows path normalization behavior")
+    def test_edit_accepts_git_bash_style_drive_path(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "git_bash_edit.txt"
+        target.write_text("alpha beta")
+        result = ut.Edit(_to_git_bash_path(target), "alpha", "omega")
+        assert "Successfully replaced" in result
+        assert target.read_text() == "omega beta"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows line-ending preservation behavior")
+    def test_write_preserves_lf_bytes_on_windows(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "write_lf.txt"
+        result = ut.Write(str(target), "a\nb\n")
+        assert "Successfully wrote" in result
+        assert target.read_bytes() == b"a\nb\n"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows line-ending preservation behavior")
+    def test_write_preserves_crlf_bytes_on_windows(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "write_crlf.txt"
+        result = ut.Write(str(target), "a\r\nb\r\n")
+        assert "Successfully wrote" in result
+        assert target.read_bytes() == b"a\r\nb\r\n"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows line-ending preservation behavior")
+    def test_edit_preserves_existing_lf_endings_on_windows(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "edit_lf.txt"
+        target.write_bytes(b"alpha\nbeta\n")
+        result = ut.Edit(str(target), "alpha", "omega")
+        assert "Successfully replaced" in result
+        assert target.read_bytes() == b"omega\nbeta\n"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows line-ending preservation behavior")
+    def test_edit_preserves_existing_crlf_endings_on_windows(self, tools):
+        ut, test_dir = tools
+        target = test_dir / "edit_crlf.txt"
+        target.write_bytes(b"alpha\r\nbeta\r\n")
+        result = ut.Edit(str(target), "alpha", "omega")
+        assert "Successfully replaced" in result
+        assert target.read_bytes() == b"omega\r\nbeta\r\n"
+
 
 class TestExtractLeadingCommandName:
     def test_unterminated_quote_returns_none(self):
@@ -236,6 +303,11 @@ class TestExtractCommandNames:
 
     def test_heredoc_stripping(self):
         cmd = "cat << EOF\nhello world\nEOF"
+        result = _strip_heredocs(cmd)
+        assert "hello world" not in result
+
+    def test_heredoc_stripping_crlf(self):
+        cmd = "cat << EOF\r\nhello world\r\nEOF\r\n"
         result = _strip_heredocs(cmd)
         assert "hello world" not in result
 

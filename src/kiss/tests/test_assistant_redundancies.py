@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 
 from kiss.agents.sorcar.sorcar import (
     _clean_llm_output,
+    _collect_listening_pids,
     _model_vendor_order,
     _read_active_file,
+    _terminate_listeners_on_port,
 )
 
 
@@ -83,3 +86,48 @@ class TestNoSyntaxErrors:
 
         # get_most_expensive_model was removed from imports as it's no longer used
         assert not hasattr(mod, "get_most_expensive_model")
+
+
+class TestPortListenerHelpers:
+    def test_collect_listening_pids_windows_parses_netstat(self, monkeypatch) -> None:
+        import kiss.agents.sorcar.sorcar as sorcar_mod
+
+        netstat_out = "\n".join(
+            [
+                "  Proto  Local Address          Foreign Address        State           PID",
+                "  TCP    127.0.0.1:13338        0.0.0.0:0              ABHOEREN        1111",
+                "  TCP    [::]:13338             [::]:0                 LISTENING       2222",
+                "  TCP    127.0.0.1:9000         0.0.0.0:0              LISTENING       3333",
+                "  TCP    127.0.0.1:13338        127.0.0.1:50000        ESTABLISHED     4444",
+            ]
+        )
+
+        def _fake_run(cmd, check, capture_output, text, timeout):
+            assert cmd == ["netstat", "-ano", "-p", "tcp"]
+            return SimpleNamespace(stdout=netstat_out, stderr="", returncode=0)
+
+        monkeypatch.setattr(sorcar_mod.os, "name", "nt")
+        monkeypatch.setattr(sorcar_mod.subprocess, "run", _fake_run)
+
+        assert _collect_listening_pids(13338) == {1111, 2222}
+
+    def test_terminate_listeners_windows_uses_taskkill_and_skips_self(self, monkeypatch) -> None:
+        import kiss.agents.sorcar.sorcar as sorcar_mod
+
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, check, capture_output, text, timeout):
+            calls.append(cmd)
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+        monkeypatch.setattr(sorcar_mod.os, "name", "nt")
+        monkeypatch.setattr(sorcar_mod.os, "getpid", lambda: 100)
+        monkeypatch.setattr(sorcar_mod, "_collect_listening_pids", lambda _port: {100, 200, 300})
+        monkeypatch.setattr(sorcar_mod.subprocess, "run", _fake_run)
+
+        _terminate_listeners_on_port(13338)
+
+        assert calls == [
+            ["taskkill", "/PID", "200", "/F", "/T"],
+            ["taskkill", "/PID", "300", "/F", "/T"],
+        ]

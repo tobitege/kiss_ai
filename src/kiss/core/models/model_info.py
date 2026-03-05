@@ -354,9 +354,9 @@ MODEL_INFO: dict[str, ModelInfo] = {
     "gpt-4": _mi(8192, 30.00, 60.00),
     "gpt-4-turbo": _mi(128000, 10.00, 30.00),
     "gpt-4-turbo-preview": _mi(128000, 10.00, 30.00),
-    "gpt-4.1": _mi(1047576, 2.00, 8.00),
-    "gpt-4.1-mini": _mi(1047576, 0.40, 1.60),
-    "gpt-4.1-nano": _mi(1047576, 0.10, 0.40, fc=False),
+    "gpt-4.1": _mi(128000, 2.00, 8.00),
+    "gpt-4.1-mini": _mi(128000, 0.40, 1.60),
+    "gpt-4.1-nano": _mi(128000, 0.10, 0.40, fc=False),
     "gpt-4.5-preview": _mi(128000, 75.00, 150.00),  # Deprecated
     "gpt-4o": _mi(128000, 2.50, 10.00),
     "gpt-4o-audio-preview": _mi(128000, 2.50, 10.00, fc=False),

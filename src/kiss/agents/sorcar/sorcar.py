@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -109,9 +111,118 @@ def _resolve_requested_file_path(requested_path: str, work_dir: str) -> str:
     Accept absolute paths across platforms (including Windows drive/UNC paths)
     and resolve relative paths under work_dir.
     """
+    requested_path = _normalize_windows_drive_path(requested_path)
     if os.path.isabs(requested_path):
         return os.path.abspath(requested_path)
     return os.path.abspath(os.path.join(work_dir, requested_path))
+
+
+def _normalize_windows_drive_path(path: str) -> str:
+    """Normalize Git-Bash/WSL-style Windows drive paths to native Windows format.
+
+    Examples on Windows:
+    - `/c/Users/me/file.txt` -> `C:\\Users\\me\\file.txt`
+    - `/mnt/c/Users/me/file.txt` -> `C:\\Users\\me\\file.txt`
+    """
+    if os.name != "nt":
+        return path
+    normalized = path.replace("\\", "/")
+    m = re.match(r"^/(?:mnt/)?([a-zA-Z])(?:/(.*))?$", normalized)
+    if not m:
+        return path
+    drive = m.group(1).upper()
+    rest = m.group(2) or ""
+    if not rest:
+        return f"{drive}:{os.sep}"
+    return f"{drive}:{os.sep}{rest.replace('/', os.sep)}"
+
+
+def _collect_listening_pids(port: int) -> set[int]:
+    """Return process IDs listening on localhost TCP `port` for current platform."""
+    pids: set[int] = set()
+    if os.name == "nt":
+        try:
+            # netstat output is locale-dependent. Avoid state-text matching and
+            # identify listeners by foreign address 0 and target local port.
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                proto = parts[0].upper()
+                local_addr = parts[1]
+                foreign_addr = parts[2]
+                pid_str = parts[-1]
+                if proto != "TCP":
+                    continue
+                if not local_addr.endswith(f":{port}"):
+                    continue
+                if foreign_addr not in {"0.0.0.0:0", "[::]:0", "*:0"}:
+                    continue
+                try:
+                    pids.add(int(pid_str))
+                except ValueError:
+                    logger.debug("Exception caught", exc_info=True)
+                    pass
+        except Exception:
+            logger.debug("Exception caught", exc_info=True)
+            pass
+        return pids
+
+    lsof = shutil.which("lsof")
+    if not lsof:
+        return pids
+    try:
+        result = subprocess.run(
+            [lsof, "-ti", f":{port}", "-sTCP:LISTEN"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            if not pid_str.strip():
+                continue
+            try:
+                pids.add(int(pid_str.strip()))
+            except ValueError:
+                logger.debug("Exception caught", exc_info=True)
+                pass
+    except Exception:
+        logger.debug("Exception caught", exc_info=True)
+        pass
+    return pids
+
+
+def _terminate_listeners_on_port(port: int) -> None:
+    """Terminate processes currently listening on localhost TCP `port`."""
+    pids = _collect_listening_pids(port)
+    if not pids:
+        return
+    current_pid = os.getpid()
+    for pid in sorted(pids):
+        if pid == current_pid:
+            continue
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/F", "/T"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except Exception:
+            logger.debug("Exception caught", exc_info=True)
+            pass
 
 
 def _clear_codex_auth_caches() -> None:
@@ -245,14 +356,7 @@ def run_chatbot(
             reason = "extension updated" if ext_changed else "work directory changed"
             printer.print(f"Restarting code-server ({reason})...")
             try:
-                result = subprocess.run(
-                    ["lsof", "-ti", f":{cs_port}", "-sTCP:LISTEN"],
-                    capture_output=True,
-                    text=True,
-                )
-                for pid_str in result.stdout.strip().split("\n"):
-                    if pid_str.strip():
-                        os.kill(int(pid_str.strip()), 15)
+                _terminate_listeners_on_port(cs_port)
                 time.sleep(1.5)
             except Exception:
                 logger.debug("Exception caught", exc_info=True)
