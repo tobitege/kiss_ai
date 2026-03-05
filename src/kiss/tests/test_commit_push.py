@@ -65,6 +65,16 @@ def test_push_route_in_assistant_source():
     assert 'Route("/push"' in source
 
 
+def test_auth_route_in_assistant_source():
+    """The /auth route must be registered for auth panel status/actions."""
+    import inspect
+
+    from kiss.agents.sorcar import sorcar
+
+    source = inspect.getsource(sorcar)
+    assert 'Route("/auth"' in source
+
+
 def test_resolve_requested_file_path_relative():
     """Relative paths should resolve under work_dir."""
     with tempfile.TemporaryDirectory() as tmpdir:

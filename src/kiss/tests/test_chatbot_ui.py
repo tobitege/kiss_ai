@@ -38,7 +38,7 @@ def test_model_picker_shrinks_on_zoom():
     idx = CHATBOT_CSS.index("#model-picker{")
     block = CHATBOT_CSS[idx : CHATBOT_CSS.index("}", idx) + 1]
     assert "min-width:0" in block
-    assert "overflow:hidden" in block
+    assert "overflow:visible" in block
 
 
 def test_input_actions_no_shrink():
@@ -46,6 +46,28 @@ def test_input_actions_no_shrink():
     idx = CHATBOT_CSS.index("#input-actions{")
     block = CHATBOT_CSS[idx : CHATBOT_CSS.index("}", idx) + 1]
     assert "flex-shrink:0" in block
+
+
+def test_auth_button_and_panel_exist():
+    html = _build_html("Test", "", "/tmp")
+    assert 'id="auth-btn"' in html
+    assert 'id="auth-panel"' in html
+    assert 'id="auth-refresh-btn"' in html
+    assert 'id="auth-login-btn"' in html
+    assert 'id="auth-logout-btn"' in html
+
+
+def test_auth_panel_js_uses_auth_endpoint():
+    assert "function toggleAuthPanel()" in CHATBOT_JS
+    assert "fetch('/auth?model='" in CHATBOT_JS
+    assert "fetch('/auth',{" in CHATBOT_JS
+    assert "loadAuthStatus('login')" in CHATBOT_JS
+    assert "loadAuthStatus('logout')" in CHATBOT_JS
+    assert "window.open(d.login_url" in CHATBOT_JS
+
+
+def test_model_vendor_groups_chatgpt_under_openai():
+    assert "^(chatgpt|gpt|o[134]|codex|computer-use)" in CHATBOT_JS
 
 
 if __name__ == "__main__":
