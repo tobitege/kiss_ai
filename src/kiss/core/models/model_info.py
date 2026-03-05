@@ -121,6 +121,17 @@ def _emb(ctx: int, inp: float) -> ModelInfo:
 
 
 _OPENAI_PREFIXES = ("chatgpt", "gpt", "text-embedding", "o1", "o3", "o4", "codex", "computer-use")
+# Curated model IDs shown under explicit "Codex" provider selection in UI.
+_CODEX_PROVIDER_MODELS = frozenset(
+    {
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-max",
+        "gpt-5.2",
+        "gpt-5.1-codex-mini",
+    }
+)
 # Subscription auth (ChatGPT/Codex) does not mirror the full platform API catalog.
 # Keep this allow-list explicit so API-only models continue to use OPENAI_API_KEY.
 _CODEX_SUBSCRIPTION_MODELS = frozenset(
@@ -138,8 +149,10 @@ _CODEX_SUBSCRIPTION_MODELS = frozenset(
         "gpt-5.1-codex",
         "gpt-5.1-codex-max",
         "gpt-5.1-codex-mini",
+        "gpt-5.2",
         "gpt-5.2-codex",
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
     }
 )
 _TOGETHER_PREFIXES = (
@@ -168,6 +181,11 @@ def _is_openai_family_model(model_name: str) -> bool:
 def _is_codex_subscription_model(model_name: str) -> bool:
     """Return True when model_name is known to be available on ChatGPT/Codex auth."""
     return model_name in _CODEX_SUBSCRIPTION_MODELS
+
+
+def is_codex_provider_model(model_name: str) -> bool:
+    """Return True when model_name belongs to the explicit Codex UI provider catalog."""
+    return model_name in _CODEX_PROVIDER_MODELS
 
 
 def _openai_compatible(
@@ -383,6 +401,7 @@ MODEL_INFO: dict[str, ModelInfo] = {
     "gpt-5.2-codex": _mi(400000, 1.75, 14.00),
     "gpt-5.2-pro": _mi(400000, 21.00, 168.00),
     "gpt-5.3-codex": _mi(400000, 1.75, 14.00),
+    "gpt-5.3-codex-spark": _mi(400000, 1.75, 14.00),
     "gpt-5.3-chat-latest": _mi(128000, 1.75, 14.00),
     "gpt-audio": _mi(128000, 2.50, 10.00, fc=False),
     "gpt-audio-1.5": _mi(128000, 2.50, 10.00, fc=False),

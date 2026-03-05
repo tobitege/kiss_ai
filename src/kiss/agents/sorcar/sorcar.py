@@ -105,6 +105,23 @@ def _clean_llm_output(text: str) -> str:
     return text.strip().strip('"').strip("'")
 
 
+def _new_utility_agent(name: str) -> KISSAgent:
+    """Create a non-task utility agent without trajectory persistence."""
+    agent = KISSAgent(name)
+    agent.save_trajectory = False
+    return agent
+
+
+def _should_warn_no_changes(
+    done_event: dict[str, str] | None,
+    merge_result: dict[str, Any],
+) -> bool:
+    """Return True when task reported completion but produced no file changes."""
+    if not done_event or done_event.get("type") != "task_done":
+        return False
+    return merge_result.get("error") == "No changes"
+
+
 def _resolve_requested_file_path(requested_path: str, work_dir: str) -> str:
     """Resolve a user-provided file path against the current work directory.
 
@@ -258,7 +275,7 @@ def _generate_commit_msg(diff_text: str, *, detailed: bool = False) -> str:
             "Generate a concise git commit message (1-2 lines) for these changes. "
             "Return ONLY the commit message text, no quotes.\n\n{context}"
         )
-    agent = KISSAgent("Commit Message Generator")
+    agent = _new_utility_agent("Commit Message Generator")
     try:
         raw = agent.run(
             model_name=_COMMIT_MODEL,
@@ -284,6 +301,22 @@ def _model_vendor_order(name: str) -> int:
     if name.startswith("openrouter/"):
         return 4
     return 5
+
+
+def _model_provider_key(name: str) -> str:
+    if model_info_module.is_codex_provider_model(name):
+        return "codex"
+    if name.startswith("claude-"):
+        return "anthropic"
+    if name.startswith(_OPENAI_PREFIXES) and not name.startswith("openai/gpt-oss"):
+        return "openai"
+    if name.startswith("gemini-"):
+        return "gemini"
+    if name.startswith("minimax-"):
+        return "minimax"
+    if name.startswith("openrouter/"):
+        return "openrouter"
+    return "together"
 
 
 def run_chatbot(
@@ -427,7 +460,7 @@ def run_chatbot(
             printer.broadcast({"type": "proposed_updated"})
             return
         task_list = "\n".join(f"- {e['task']}" for e in history[:20])
-        agent = KISSAgent("Task Proposer")
+        agent = _new_utility_agent("Task Proposer")
         try:
             result = agent.run(
                 model_name=_FAST_MODEL,
@@ -456,7 +489,7 @@ def run_chatbot(
 
     def generate_followup(task: str, result: str) -> None:
         try:
-            agent = KISSAgent("Followup Proposer")
+            agent = _new_utility_agent("Followup Proposer")
             raw = agent.run(
                 model_name=_FAST_MODEL,
                 prompt_template=(
@@ -674,9 +707,17 @@ def run_chatbot(
             printer.broadcast({"type": "tasks_updated"})
             pre_hunks = _parse_diff_hunks(actual_work_dir)
             pre_untracked = _capture_untracked(actual_work_dir)
-            pre_file_hashes = _snapshot_files(actual_work_dir, set(pre_hunks.keys()))
+            pre_file_hashes = _snapshot_files(
+                actual_work_dir, set(pre_hunks.keys()) | pre_untracked
+            )
             active_file = _read_active_file(cs_data_dir)
             printer.broadcast({"type": "clear", "active_file": active_file})
+            printer.broadcast(
+                {
+                    "type": "system_output",
+                    "text": f"Task started with model {model_name}. Waiting for tool activity...",
+                }
+            )
             agent = agent_factory("Chatbot")
             extra_kwargs = dict(agent_kwargs or {})
             if active_file:
@@ -729,6 +770,16 @@ def run_chatbot(
                     )
                     if merge_result.get("status") == "opened":
                         printer.broadcast({"type": "merge_started"})
+                    if _should_warn_no_changes(done_event, merge_result):
+                        printer.broadcast(
+                            {
+                                "type": "system_output",
+                                "text": (
+                                    "Task reported completion but no file changes were detected. "
+                                    "Review the result summary for hallucinated completion."
+                                ),
+                            }
+                        )
                 except Exception:
                     logger.debug("Exception caught", exc_info=True)
                     pass
@@ -940,7 +991,7 @@ def run_chatbot(
         def _generate() -> str:
             history = _load_history()
             task_list = "\n".join(f"- {e['task']}" for e in history[:20])
-            agent = KISSAgent("Autocomplete")
+            agent = _new_utility_agent("Autocomplete")
             try:
                 result = agent.run(
                     model_name=_FAST_MODEL,
@@ -980,6 +1031,7 @@ def run_chatbot(
                         "inp": info.input_price_per_1M,
                         "out": info.output_price_per_1M,
                         "uses": usage.get(name, 0),
+                        "provider": _model_provider_key(name),
                     }
                 )
         models_list.sort(
@@ -1408,7 +1460,7 @@ def run_chatbot(
                 info_parts.append("Recent tasks: " + "; ".join(recent))
             config_info = "\n".join(info_parts)
 
-            agent = KISSAgent("Config Message Generator")
+            agent = _new_utility_agent("Config Message Generator")
             try:
                 result = agent.run(
                     model_name=_FAST_MODEL,

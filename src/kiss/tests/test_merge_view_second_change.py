@@ -122,6 +122,53 @@ class TestMergeViewSecondChange:
             assert result.get("status") == "opened"
             assert result.get("count") == 1
 
+    def test_preexisting_untracked_file_edit_is_detected(self) -> None:
+        """Editing an untracked file that existed before run should open merge view."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = _create_git_repo(tmpdir)
+            data_dir = os.path.join(tmpdir, "data")
+            os.makedirs(data_dir)
+
+            # File exists before agent run and is already untracked.
+            Path(repo, "scratch.txt").write_text("alpha\n")
+
+            pre_hunks = _parse_diff_hunks(repo)
+            pre_untracked = _capture_untracked(repo)
+            pre_hashes = _snapshot_files(repo, set(pre_hunks.keys()) | pre_untracked)
+
+            # Agent modifies same untracked file during the run.
+            Path(repo, "scratch.txt").write_text("alpha\nbeta\n")
+
+            result = _prepare_merge_view(
+                repo, data_dir, pre_hunks, pre_untracked, pre_hashes
+            )
+            assert result.get("status") == "opened"
+            assert result.get("count") == 1
+
+    def test_second_change_different_lines(self) -> None:
+        """Agent changes different lines on second run — should show merge view."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = _create_git_repo(tmpdir)
+            data_dir = os.path.join(tmpdir, "data")
+            os.makedirs(data_dir)
+
+            # First change (accepted)
+            Path(repo, "example.md").write_text("line 1\nMODIFIED line 2\nline 3\n")
+
+            # Second run
+            pre_hunks = _parse_diff_hunks(repo)
+            pre_untracked = _capture_untracked(repo)
+            pre_hashes = _snapshot_files(repo, set(pre_hunks.keys()))
+
+            # Agent changes a different line
+            Path(repo, "example.md").write_text(
+                "line 1\nMODIFIED line 2\nline 3 CHANGED\n"
+            )
+
+            result = _prepare_merge_view(
+                repo, data_dir, pre_hunks, pre_untracked, pre_hashes
+            )
+            assert result.get("status") == "opened"
 
 class TestSnapshotFiles:
     """Tests for _snapshot_files helper."""

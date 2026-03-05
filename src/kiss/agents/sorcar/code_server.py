@@ -731,7 +731,8 @@ def _prepare_merge_view(
             ]
         if filtered:
             file_hunks[fname] = filtered
-    new_files = _capture_untracked(work_dir) - pre_untracked
+    current_untracked = _capture_untracked(work_dir)
+    new_files = current_untracked - pre_untracked
     for fname in new_files:
         fpath = Path(work_dir) / fname
         try:
@@ -743,6 +744,24 @@ def _prepare_merge_view(
         except (OSError, UnicodeDecodeError):
             logger.debug("Exception caught", exc_info=True)
             pass
+    if pre_file_hashes is not None:
+        modified_untracked = current_untracked & pre_untracked
+        for fname in modified_untracked:
+            if fname not in pre_file_hashes:
+                continue
+            fpath = Path(work_dir) / fname
+            try:
+                if not fpath.is_file() or fpath.stat().st_size > 2_000_000:
+                    continue
+                current_hash = hashlib.md5(fpath.read_bytes()).hexdigest()
+                if current_hash == pre_file_hashes[fname]:
+                    continue
+                line_count = len(fpath.read_text().splitlines())
+                if line_count:
+                    file_hunks[fname] = [{"bs": 0, "bc": 0, "cs": 0, "cc": line_count}]
+            except (OSError, UnicodeDecodeError):
+                logger.debug("Exception caught", exc_info=True)
+                pass
     if not file_hunks:
         return {"error": "No changes"}
     merge_dir = Path(data_dir) / "merge-temp"
