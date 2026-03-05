@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+from urllib.parse import quote
 
 from kiss.agents.sorcar.browser_ui import (
     BASE_CSS,
@@ -2173,12 +2176,14 @@ def _build_html(title: str, code_server_url: str = "", work_dir: str = "") -> st
     css = font_import + BASE_CSS + OUTPUT_CSS + CHATBOT_CSS + CHATBOT_THEME_CSS
 
     if code_server_url:
-        import urllib.parse
-
-        wd_enc = urllib.parse.quote(work_dir, safe="")
+        # On Windows, prefix with "/" so "C:" is not parsed as URI scheme "c".
+        folder_path = Path(work_dir).resolve().as_posix()
+        if os.name == "nt" and not folder_path.startswith("/"):
+            folder_path = "/" + folder_path
+        folder_path = quote(folder_path, safe="/:")
         editor_content = (
             f'<iframe id="code-server-frame"'
-            f' src="{code_server_url}/?folder={wd_enc}"'
+            f' src="{code_server_url}/?folder={folder_path}"'
             f' data-base-url="{code_server_url}"'
             f' data-work-dir="{work_dir}"></iframe>'
         )
