@@ -4,7 +4,7 @@ import unittest
 
 import pytest
 
-from kiss.agents.sorcar.chatbot_ui import CHATBOT_CSS, CHATBOT_JS
+from kiss.agents.sorcar.chatbot_ui import CHATBOT_CSS, CHATBOT_JS, _build_html
 
 
 class TestTextareaAutoResize(unittest.TestCase):

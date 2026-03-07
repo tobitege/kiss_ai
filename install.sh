@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# This installer targets Unix-like shells. On Windows, follow
-# the PowerShell steps in README.md instead.
-
 # Install uv (Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -30,3 +27,9 @@ if [[ -z "${GEMINI_API_KEY}" ]]; then
   echo "KISS Sorcar requires GEMINI_API_KEY in the environment"
   exit 1
 fi
+if [[ -n "${GEMINI_API_KEY}" ]]; then
+  echo "KISS Sorcar requires GEMINI_API_KEY in the environment"
+  exit 1
+fi
+
+uv run sorcar
