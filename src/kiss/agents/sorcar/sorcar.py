@@ -1696,10 +1696,13 @@ def run_chatbot(
         printer.broadcast({"type": "focus_chatbox"})
         return JSONResponse({"status": "ok"})
 
+    def _write_pending_json(name: str, payload: dict[str, Any]) -> None:
+        Path(cs_data_dir).mkdir(parents=True, exist_ok=True)
+        pending = Path(cs_data_dir) / name
+        pending.write_text(json.dumps(payload))
+
     async def focus_editor(request: Request) -> JSONResponse:
-        pending = os.path.join(cs_data_dir, "pending-focus-editor.json")
-        with open(pending, "w") as f:
-            json.dump({"focus": True}, f)
+        _write_pending_json("pending-focus-editor.json", {"focus": True})
         return JSONResponse({"status": "ok"})
 
     async def theme(request: Request) -> JSONResponse:
@@ -1722,9 +1725,7 @@ def run_chatbot(
         full = _resolve_requested_file_path(rel, actual_work_dir)
         if not os.path.isfile(full):
             return JSONResponse({"error": "File not found"}, status_code=404)
-        pending = os.path.join(cs_data_dir, "pending-open.json")
-        with open(pending, "w") as f:
-            json.dump({"path": full}, f)
+        _write_pending_json("pending-open.json", {"path": full})
         return JSONResponse({"status": "ok"})
 
     async def merge_action(request: Request) -> JSONResponse:
@@ -1739,9 +1740,7 @@ def run_chatbot(
             return JSONResponse({"status": "ok"})
         if action not in ("prev", "next", "accept-all", "reject-all", "accept", "reject"):
             return JSONResponse({"error": "Invalid action"}, status_code=400)
-        pending = os.path.join(cs_data_dir, "pending-action.json")
-        with open(pending, "w") as f:
-            json.dump({"action": action}, f)
+        _write_pending_json("pending-action.json", {"action": action})
         return JSONResponse({"status": "ok"})
 
     async def _thread_json_response(
@@ -1828,9 +1827,7 @@ def run_chatbot(
                 if untracked_files:  # pragma: no branch
                     context_parts.append(f"New untracked files:\n{untracked_files[:500]}")
                 msg = _generate_commit_msg("\n\n".join(context_parts), detailed=True)
-                scm_pending = os.path.join(cs_data_dir, "pending-scm-message.json")
-                with open(scm_pending, "w") as f:
-                    json.dump({"message": msg}, f)
+                _write_pending_json("pending-scm-message.json", {"message": msg})
                 return {"message": msg}
             except Exception as e:  # pragma: no cover – git/LLM error
                 logger.debug("Exception caught", exc_info=True)

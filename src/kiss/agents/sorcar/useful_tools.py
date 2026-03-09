@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import sys
@@ -14,15 +15,21 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
 def _truncate_output(output: str, max_chars: int) -> str:
     if len(output) <= max_chars:
         return output
-    half = max_chars // 2
-    return (
-        output[:half]
-        + f"\n\n... [truncated {len(output) - max_chars} chars] ...\n\n"
-        + output[-half:]
-    )
+    worst_msg = f"\n\n... [truncated {len(output)} chars] ...\n\n"
+    if max_chars < len(worst_msg):
+        return output[:max_chars]
+    remaining = max_chars - len(worst_msg)
+    head = remaining // 2
+    tail = remaining - head
+    dropped = len(output) - head - tail
+    msg = f"\n\n... [truncated {dropped} chars] ...\n\n"
+    if tail:
+        return output[:head] + msg + output[-tail:]
+    return output[:head] + msg
 
 
 def _detect_shell_prefix(
@@ -68,14 +75,21 @@ def _normalize_windows_drive_path(path: str) -> str:
     if os.name != "nt":
         return path
     normalized = path.replace("\\", "/")
-    m = re.match(r"^/(?:mnt/)?([a-zA-Z])(?:/(.*))?$", normalized)
-    if not m:
+    match = re.match(r"^/(?:mnt/)?([a-zA-Z])(?:/(.*))?$", normalized)
+    if not match:
         return path
-    drive = m.group(1).upper()
-    rest = m.group(2) or ""
+    drive = match.group(1).upper()
+    rest = match.group(2) or ""
     if not rest:
         return f"{drive}:{os.sep}"
     return f"{drive}:{os.sep}{rest.replace('/', os.sep)}"
+
+
+def _resolve_tool_path(file_path: str) -> Path:
+    normalized = _normalize_windows_drive_path(file_path)
+    if os.name == "nt" and file_path.startswith("/") and normalized == file_path:
+        raise ValueError(f"Invalid path on Windows: {file_path}")
+    return Path(normalized).resolve()
 
 
 EDIT_SCRIPT = r"""
@@ -229,6 +243,7 @@ echo "----------------------------------------"
 exit 0
 """
 
+
 # Cross-platform edit implementation used when bash isn't available
 # (most Windows setups) while preserving the same external behavior.
 EDIT_SCRIPT_PYTHON = r"""
@@ -310,7 +325,12 @@ DISALLOWED_BASH_COMMANDS = {
     "env",
     "eval",
     "exec",
+    "source",
 }
+
+
+_SHELL_PREFIX_TOKENS = frozenset(("!", "{", "}", "(", ")", "&"))
+_REDIRECT_RE = re.compile(r"^[0-9]*[<>][<>&]*")
 
 
 def _extract_leading_command_name(part: str) -> str | None:
@@ -325,17 +345,76 @@ def _extract_leading_command_name(part: str) -> str | None:
     i = 0
     while i < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*", tokens[i]):
         i += 1
+
+    while i < len(tokens):
+        token = tokens[i]
+        if token in _SHELL_PREFIX_TOKENS:
+            i += 1
+            continue
+        match = _REDIRECT_RE.match(token)
+        if match:
+            if match.end() < len(token):
+                i += 1
+            else:
+                i += 2
+            continue
+        break
+
     if i >= len(tokens):
         return None
-    return tokens[i].split("/")[-1]
+    name = tokens[i].lstrip("({")
+    if not name:
+        return None
+    return name.split("/")[-1]
+
+
+def _split_respecting_quotes(command: str, pattern: re.Pattern[str]) -> list[str]:
+    """Split *command* on *pattern* while skipping quoted and escaped regions."""
+    segments: list[str] = []
+    current: list[str] = []
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\":
+            current.append(command[i : i + 2])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            j = i + 1
+            while j < len(command):
+                if command[j] == "\\" and quote == '"':
+                    j += 2
+                    continue
+                if command[j] == quote:
+                    j += 1
+                    break
+                j += 1
+            current.append(command[i:j])
+            i = j
+            continue
+        match = pattern.match(command, i)
+        if match:
+            segments.append("".join(current))
+            current = []
+            i = match.end()
+            continue
+        current.append(ch)
+        i += 1
+    segments.append("".join(current))
+    return segments
+
+
+_CONTROL_RE = re.compile(r"&&|\|\||;|\n|(?<![<>|&])&(?![&>])")
+_PIPE_RE = re.compile(r"(?<!>)\|(?!\|)")
 
 
 def _extract_command_names(command: str) -> list[str]:
     names: list[str] = []
     stripped_command = _strip_heredocs(command)
-    segments = re.split(r"&&|\|\||;", stripped_command)
+    segments = _split_respecting_quotes(stripped_command, _CONTROL_RE)
     for segment in segments:
-        for part in re.split(r"(?<!>)\|(?!\|)", segment):
+        for part in _split_respecting_quotes(segment, _PIPE_RE):
             name = _extract_leading_command_name(part.strip())
             if name:
                 names.append(name)
@@ -349,11 +428,44 @@ def _strip_heredocs(command: str) -> str:
     so that heredoc body text is not parsed as command arguments.
     """
     return re.sub(
-        r"<<-?\s*'?\"?(\w+)'?\"?\s*\r?\n.*?\r?\n\s*\1\b",
+        r"<<-?\s*['\"]?(\w+)['\"]?[^\r\n]*\r?\n(?:.*?\r?\n)*?[ \t]*\1[ \t]*(?=\r?\n|$)",
         "",
         command,
         flags=re.DOTALL,
     )
+
+
+def _format_bash_result(returncode: int, output: str, max_output_chars: int) -> str:
+    if returncode != 0:
+        logger.debug("Bash command exited with code %s", returncode)
+        msg = f"Error: command failed\nError (exit code {returncode}):"
+        if output:
+            msg += f"\n{output}"
+        return _truncate_output(msg, max_output_chars)
+    return _truncate_output(output, max_output_chars)
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    if os.name != "nt" and hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        else:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                pass
+            return
+
+    try:
+        process.kill()
+    except OSError:  # pragma: no cover
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:  # pragma: no cover
+        pass
 
 
 class UsefulTools:
@@ -379,7 +491,7 @@ class UsefulTools:
             max_lines: Maximum number of lines to return.
         """
         try:
-            resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
+            resolved = _resolve_tool_path(file_path)
             with resolved.open("r", newline="") as f:
                 text = f.read()
             lines = text.splitlines(keepends=True)
@@ -405,11 +517,11 @@ class UsefulTools:
             content: The full content to write to the file.
         """
         try:
-            resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
+            resolved = _resolve_tool_path(file_path)
             resolved.parent.mkdir(parents=True, exist_ok=True)
             with resolved.open("w", newline="") as f:
                 f.write(content)
-            return f"Successfully wrote {len(content)} bytes to {file_path}"
+            return f"Successfully wrote {len(content)} characters to {file_path}"
         except Exception as e:
             logger.debug("Exception caught", exc_info=True)
             return f"Error: {e}"
@@ -434,9 +546,11 @@ class UsefulTools:
         Returns:
             The output of the edit operation.
         """
-
-        resolved = Path(_normalize_windows_drive_path(file_path)).resolve()
-        replace_all_str = "true" if replace_all else "false"
+        try:
+            resolved = _resolve_tool_path(file_path)
+        except Exception as e:
+            logger.debug("Exception caught", exc_info=True)
+            return f"Error: {e}"
 
         # Windows commonly lacks bash; run a Python edit helper instead.
         bash_path = shutil.which("bash")
@@ -448,7 +562,7 @@ class UsefulTools:
                 str(resolved),
                 old_string,
                 new_string,
-                replace_all_str,
+                "true" if replace_all else "false",
             ]
             try:
                 result = subprocess.run(
@@ -465,6 +579,7 @@ class UsefulTools:
                 error_msg = e.stderr.strip() if e.stderr else str(e)
                 return f"Error: {error_msg}"
             except Exception as e:  # pragma: no cover
+                logger.debug("Exception caught", exc_info=True)
                 return f"Error: {e}"
 
         with tempfile.NamedTemporaryFile(
@@ -488,7 +603,7 @@ class UsefulTools:
                 str(resolved),
                 old_string,
                 new_string,
-                replace_all_str,
+                "true" if replace_all else "false",
             ]
 
             # Execute with timeout for safety
@@ -517,7 +632,24 @@ class UsefulTools:
                 Path(script_path).unlink()
             except Exception:  # pragma: no cover
                 logger.debug("Exception caught", exc_info=True)
-                pass
+
+    def _start_bash_process(self, command: str) -> subprocess.Popen[str]:
+        if os.name == "nt":
+            return subprocess.Popen(
+                [*self.shell_prefix, command],
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        return subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
 
     def Bash(  # noqa: N802
         self,
@@ -547,40 +679,43 @@ class UsefulTools:
             return self._bash_streaming(command, timeout_seconds, max_output_chars)
 
         try:
-            result = subprocess.run(
-                [*self.shell_prefix, command],
-                shell=False,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-            )
-            return _truncate_output(result.stdout, max_output_chars)
-        except subprocess.TimeoutExpired:
-            logger.debug("Exception caught", exc_info=True)
-            return "Error: Command execution timeout"
-        except subprocess.CalledProcessError as e:
-            logger.debug("Exception caught", exc_info=True)
-            return f"Error: {e}"
+            process = self._start_bash_process(command)
+            try:
+                stdout, _ = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                logger.debug("Exception caught", exc_info=True)
+                _kill_process_group(process)
+                try:
+                    process.communicate(timeout=5)
+                except Exception:  # pragma: no cover
+                    pass
+                return "Error: Command execution timeout"
+            except BaseException:
+                _kill_process_group(process)
+                try:
+                    process.communicate(timeout=5)
+                except Exception:  # pragma: no cover
+                    pass
+                raise
+            return _format_bash_result(process.returncode, stdout, max_output_chars)
         except Exception as e:  # pragma: no cover
             logger.debug("Exception caught", exc_info=True)
             return f"Error: {e}"
 
-    def _bash_streaming(self, command: str, timeout_seconds: float, max_output_chars: int) -> str:
+    def _bash_streaming(
+        self,
+        command: str,
+        timeout_seconds: float,
+        max_output_chars: int,
+    ) -> str:
         assert self.stream_callback is not None
-        process = subprocess.Popen(
-            [*self.shell_prefix, command],
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        process = self._start_bash_process(command)
         timed_out = False
 
         def _kill() -> None:
             nonlocal timed_out
             timed_out = True
-            process.kill()
+            _kill_process_group(process)
 
         timer = threading.Timer(timeout_seconds, _kill)
         timer.start()
@@ -590,16 +725,21 @@ class UsefulTools:
             for line in iter(process.stdout.readline, ""):
                 chunks.append(line)
                 self.stream_callback(line)
-            process.wait()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                _kill_process_group(process)
+        except BaseException:
+            _kill_process_group(process)
+            raise
         finally:
             timer.cancel()
+            if process.stdout is not None:
+                process.stdout.close()
 
         if timed_out:
+            logger.debug("Bash command timed out while streaming")
             return "Error: Command execution timeout"
 
         output = "".join(chunks)
-
-        if process.returncode != 0:
-            return f"Error: {subprocess.CalledProcessError(process.returncode, command)}"
-
-        return _truncate_output(output, max_output_chars)
+        return _format_bash_result(process.returncode, output, max_output_chars)

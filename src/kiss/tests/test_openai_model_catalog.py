@@ -7,6 +7,7 @@ def test_openai_catalog_includes_current_ids():
     expected = {
         "chatgpt-4o-latest",
         "gpt-4-turbo-preview",
+        "gpt-5.4",
         "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
         "gpt-audio-1.5",

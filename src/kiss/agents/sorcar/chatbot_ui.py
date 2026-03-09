@@ -1428,7 +1428,8 @@ function loadModels(){
   }).catch(function(){});
 }
 function _isCodexCatalogName(name){
-  return name==='gpt-5.3-codex'
+  return name==='gpt-5.4'
+    ||name==='gpt-5.3-codex'
     ||name==='gpt-5.3-codex-spark'
     ||name==='gpt-5.2-codex'
     ||name==='gpt-5.1-codex-max'
@@ -2151,6 +2152,29 @@ function mergeAction(action){
   fetch('/merge-action',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({action:action})}).catch(function(){});
 }
+function mergeCommit(){
+  var btn=document.getElementById('commit-btn');
+  btn.textContent='Committing...';btn.disabled=true;
+  fetch('/commit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){
+    if(d.error)alert('Commit failed: '+d.error);
+    else{alert('Committed: '+d.message);
+      document.getElementById('merge-toolbar').style.display='none';}
+    btn.textContent='\uD83D\uDCE6 Commit';btn.disabled=false;
+  }).catch(function(e){alert('Error: '+e);
+    btn.textContent='\uD83D\uDCE6 Commit';btn.disabled=false;});
+}
+function mergePush(){
+  var btn=document.getElementById('push-btn');
+  btn.textContent='Pushing...';btn.disabled=true;
+  fetch('/push',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({})}).then(function(r){return r.json()}).then(function(d){
+    if(d.error)alert('Push failed: '+d.error);
+    else alert('Pushed to remote successfully');
+    btn.textContent='\uD83D\uDE80 Push';btn.disabled=false;
+  }).catch(function(e){alert('Error: '+e);
+    btn.textContent='\uD83D\uDE80 Push';btn.disabled=false;});
+}
 
 function hexToRgb(h){
   var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);
@@ -2303,6 +2327,15 @@ def _build_html(title: str, code_server_url: str = "", work_dir: str = "") -> st
         '<line x1="17" y1="9" x2="7" y2="19"/>'
         '<line x1="7" y1="9" x2="17" y2="19"/></svg>'
     )
+    _svg_commit = (
+        f'<svg{_s20}><circle cx="12" cy="12" r="4"/>'
+        '<line x1="1.05" y1="12" x2="7" y2="12"/>'
+        '<line x1="17.01" y1="12" x2="22.96" y2="12"/></svg>'
+    )
+    _svg_push = (
+        f'<svg{_s20}><line x1="12" y1="19" x2="12" y2="5"/>'
+        '<polyline points="5 12 12 5 19 12"/></svg>'
+    )
 
     _sep = '<span class="mt-sep"></span>'
     _textarea_placeholder = (
@@ -2326,6 +2359,9 @@ def _build_html(title: str, code_server_url: str = "", work_dir: str = "") -> st
       {_sep}
       <button onclick="mergeAction('accept-all')" title="Accept all">{_svg_accept_all}</button>
       <button onclick="mergeAction('reject-all')" title="Reject all">{_svg_reject_all}</button>
+      {_sep}
+      <button id="commit-btn" onclick="mergeCommit()" title="Commit changes">{_svg_commit}</button>
+      <button id="push-btn" onclick="mergePush()" title="Push to remote">{_svg_push}</button>
     </div>
   </div>
   <div id="divider"></div>

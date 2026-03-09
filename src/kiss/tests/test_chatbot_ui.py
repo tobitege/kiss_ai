@@ -79,6 +79,7 @@ def test_model_provider_selector_present_in_html():
 
 def test_model_provider_js_has_codex_catalog_and_filtering():
     assert "function modelProviderKey(m)" in CHATBOT_JS
+    assert "gpt-5.4" in CHATBOT_JS
     assert "gpt-5.3-codex-spark" in CHATBOT_JS
     assert "if(!modelMatchesProvider(m))return;" in CHATBOT_JS
     assert "providerPinned=true;" in CHATBOT_JS

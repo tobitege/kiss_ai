@@ -5,6 +5,7 @@ from kiss.core.models import model_info
 
 
 def test_codex_subscription_model_allowlist():
+    assert model_info._is_codex_subscription_model("gpt-5.4")
     assert model_info._is_codex_subscription_model("gpt-5.3-codex")
     assert model_info._is_codex_subscription_model("gpt-5.3-codex-spark")
     assert model_info._is_codex_subscription_model("gpt-5.2")
@@ -13,6 +14,7 @@ def test_codex_subscription_model_allowlist():
 
 def test_codex_provider_catalog_allowlist():
     expected = {
+        "gpt-5.4",
         "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
         "gpt-5.2-codex",
@@ -108,6 +110,7 @@ def test_get_available_models_includes_openai_with_codex_auth(monkeypatch):
     monkeypatch.setattr(config_module.DEFAULT_CONFIG.agent.api_keys, "OPENAI_API_KEY", "")
     names = model_info.get_available_models()
     assert "gpt-4.1-mini" not in names
+    assert "gpt-5.4" in names
     assert "gpt-5.3-codex" in names
 
 

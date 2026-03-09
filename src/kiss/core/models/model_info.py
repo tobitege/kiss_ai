@@ -124,6 +124,7 @@ _OPENAI_PREFIXES = ("chatgpt", "gpt", "text-embedding", "o1", "o3", "o4", "codex
 # Curated model IDs shown under explicit "Codex" provider selection in UI.
 _CODEX_PROVIDER_MODELS = frozenset(
     {
+        "gpt-5.4",
         "gpt-5.3-codex",
         "gpt-5.3-codex-spark",
         "gpt-5.2-codex",
@@ -140,6 +141,7 @@ _CODEX_SUBSCRIPTION_MODELS = frozenset(
         "codex-mini-latest",
         "computer-use-preview",
         "gpt-5",
+        "gpt-5.4",
         "gpt-5-chat-latest",
         "gpt-5-codex",
         "gpt-5-mini",
