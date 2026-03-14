@@ -126,6 +126,26 @@ def _new_utility_agent(name: str) -> KISSAgent:
     return agent
 
 
+def _get_task_history_md_path() -> Path:
+    from kiss.core import config as config_module
+
+    return Path(config_module.DEFAULT_CONFIG.agent.artifact_dir).parent / "TASK_HISTORY.md"
+
+
+def _append_task_to_md(task: str, result: str) -> None:
+    try:
+        path = _get_task_history_md_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("# Task History\n\n")
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"## [{timestamp}] {task}\n\n### Result\n\n{result}\n\n---\n\n"
+        with path.open("a") as f:
+            f.write(entry)
+    except OSError:
+        logger.debug("Exception caught", exc_info=True)
+
+
 def _should_warn_no_changes(
     done_event: dict[str, str] | None,
     merge_result: dict[str, Any],
@@ -367,7 +387,7 @@ def run_chatbot(
     user_action_event: threading.Event | None = None
     user_question_event: threading.Event | None = None
     user_question_answer: str = ""
-    proposed_tasks: list[str] = _load_proposals()
+    proposed_tasks: list[str] = []
     proposed_lock = threading.Lock()
     last = _load_last_model()
     selected_model = last if last and last not in _INTERNAL_MODELS else default_model
@@ -401,6 +421,29 @@ def run_chatbot(
                 )
         except (ConnectionRefusedError, OSError, ValueError):
             pass  # Port not reachable; safe to reuse this data dir.
+
+    proposals_file = Path(cs_data_dir) / "proposed-tasks.json"
+
+    def _load_proposals() -> list[str]:
+        try:
+            if not proposals_file.exists():
+                return []
+            data = json.loads(proposals_file.read_text())
+            if not isinstance(data, list):
+                return []
+            return [str(item) for item in data if isinstance(item, str) and item.strip()][:5]
+        except (OSError, json.JSONDecodeError):
+            logger.debug("Exception caught", exc_info=True)
+            return []
+
+    def _save_proposals(proposals: list[str]) -> None:
+        try:
+            proposals_file.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(proposals_file, json.dumps(proposals))
+        except OSError:
+            logger.debug("Exception caught", exc_info=True)
+
+    proposed_tasks = _load_proposals()
 
     # Restore files from any stale merge state (e.g., previous crash during merge)
     _restore_merge_files(cs_data_dir, actual_work_dir)
@@ -1038,7 +1081,10 @@ def run_chatbot(
         _shutdown_oauth_callback_server()
         if cs_proc and cs_proc.poll() is None:  # pragma: no cover – cleanup timing
             try:
-                os.killpg(cs_proc.pid, 15)  # SIGTERM to process group
+                if os.name == "nt":
+                    cs_proc.terminate()
+                else:
+                    os.killpg(cs_proc.pid, signal.SIGTERM)
             except OSError:
                 cs_proc.terminate()
             try:
@@ -1046,7 +1092,10 @@ def run_chatbot(
             except Exception:
                 logger.debug("Exception caught", exc_info=True)
                 try:
-                    os.killpg(cs_proc.pid, 9)  # SIGKILL to process group
+                    if os.name == "nt":
+                        cs_proc.kill()
+                    else:
+                        os.killpg(cs_proc.pid, signal.SIGKILL)
                 except OSError:
                     cs_proc.kill()
         # Remove PID-specific data dir created for instance isolation.
@@ -1790,6 +1839,26 @@ def run_chatbot(
 
         return await _thread_json_response(_do_commit)
 
+    async def push(request: Request) -> JSONResponse:
+        def _do_push() -> dict[str, str]:
+            try:
+                result = subprocess.run(
+                    ["git", "push"],
+                    capture_output=True,
+                    text=True,
+                    cwd=actual_work_dir,
+                )
+                if result.returncode != 0:
+                    message = result.stderr.strip() or result.stdout.strip() or "git push failed"
+                    return {"error": message}
+                message = result.stdout.strip() or "Pushed to remote"
+                return {"status": "ok", "message": message}
+            except Exception as e:  # pragma: no cover – git push error
+                logger.debug("Exception caught", exc_info=True)
+                return {"error": str(e)}
+
+        return await _thread_json_response(_do_push)
+
     async def record_file_usage_endpoint(
         request: Request,
     ) -> JSONResponse:
@@ -1922,6 +1991,7 @@ def run_chatbot(
             Route("/focus-chatbox", focus_chatbox, methods=["POST"]),
             Route("/focus-editor", focus_editor, methods=["POST"]),
             Route("/commit", commit, methods=["POST"]),
+            Route("/push", push, methods=["POST"]),
             Route("/merge-action", merge_action, methods=["POST"]),
             Route("/record-file-usage", record_file_usage_endpoint, methods=["POST"]),
             Route("/generate-commit-message", generate_commit_message, methods=["POST"]),

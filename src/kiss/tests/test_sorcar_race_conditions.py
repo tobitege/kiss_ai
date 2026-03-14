@@ -39,7 +39,6 @@ from kiss.agents.sorcar.code_server import (
     _snapshot_files,
     _untracked_base_dir,
 )
-from kiss.agents.sorcar.prompt_detector import PromptDetector
 from kiss.agents.sorcar.sorcar import (
     _model_vendor_order,
     _read_active_file,
@@ -662,44 +661,6 @@ class TestBuildHtml:
 # ═══════════════════════════════════════════════════════════════════════════
 # prompt_detector.py
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class TestPromptDetector:
-    def setup_method(self) -> None:
-        self.tmpdir = tempfile.mkdtemp()
-        self.det = PromptDetector()
-
-    def teardown_method(self) -> None:
-        _force_rmtree(self.tmpdir)
-
-    def _write(self, name: str, content: str) -> str:
-        p = os.path.join(self.tmpdir, name)
-        Path(p).write_text(content)
-        return p
-
-    def test_nonexistent_file(self) -> None:
-        ok, score, reasons = self.det.analyze("/nonexistent.md")
-        assert not ok
-
-    def test_frontmatter_with_model(self) -> None:
-        content = (
-            "---\n"
-            "model: gpt-4\n"
-            "temperature: 0.7\n"
-            "---\n"
-            "You are an expert.\n"
-            "Act as a teacher.\n"
-            "{{ input }}\n"
-        )
-        p = self._write("template.md", content)
-        ok, score, reasons = self.det.analyze(p)
-        assert score > 0
-
-    def test_frontmatter_no_prompt_keys(self) -> None:
-        content = "---\ntitle: test\n---\nJust text\n"
-        p = self._write("fm.md", content)
-        ok, score, reasons = self.det.analyze(p)
-        # No prompt keys in frontmatter, score remains low
 
 
 # ═══════════════════════════════════════════════════════════════════════════
