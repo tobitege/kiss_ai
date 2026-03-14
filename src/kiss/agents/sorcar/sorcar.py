@@ -57,6 +57,7 @@ from kiss.agents.sorcar.task_history import (
     _search_history,
     _set_latest_chat_events,
 )
+from kiss.core import config as config_module
 from kiss.core.kiss_agent import KISSAgent
 from kiss.core.models import model_info as model_info_module
 from kiss.core.models.model_info import (
@@ -127,8 +128,6 @@ def _new_utility_agent(name: str) -> KISSAgent:
 
 
 def _get_task_history_md_path() -> Path:
-    from kiss.core import config as config_module
-
     return Path(config_module.DEFAULT_CONFIG.agent.artifact_dir).parent / "TASK_HISTORY.md"
 
 
