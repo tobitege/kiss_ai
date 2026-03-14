@@ -62,6 +62,15 @@ class TestBaseClass:
         files = list((tmp_path / "trajectories").glob("trajectory_save-me_*.yaml"))
         assert len(files) == 1
 
+    def test_init_prepares_lessons_and_tmp_workspace(self, tmp_path, monkeypatch):
+        artifact_dir = tmp_path / "job_123"
+        monkeypatch.setattr(config_module.DEFAULT_CONFIG.agent, "artifact_dir", str(artifact_dir))
+
+        Base("workspace")
+
+        assert (tmp_path / "tmp").is_dir()
+        assert (tmp_path / "LESSONS.md").exists()
+
 
 class TestUtils:
     def test_read_project_file_not_found(self):

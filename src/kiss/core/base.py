@@ -7,6 +7,7 @@
 
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -35,6 +36,17 @@ _KISS_DIR = Path().home() / ".kiss"
 
 _artifact_dir = Path(config_module.DEFAULT_CONFIG.agent.artifact_dir)
 
+
+def _ensure_agent_workspace() -> None:
+    """Create shared workspace files used by agent prompts."""
+    root = Path(config_module.DEFAULT_CONFIG.agent.artifact_dir).parent
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "tmp").mkdir(parents=True, exist_ok=True)
+        (root / "LESSONS.md").touch(exist_ok=True)
+    except OSError:
+        logger.debug("Exception caught", exc_info=True)
+
 SYSTEM_PROMPT = f"""
 # FOCUS ON THE GIVEN TASK.  IT'S COMPLETION IS YOUR SOLE GOAL.  BE RELENTLESS.
 
@@ -57,6 +69,7 @@ SYSTEM_PROMPT = f"""
 - Use 'uv run myprogram.py' for running Python programs.
 - READ large files in chunks.
 - Create temporary files in {_artifact_dir.parent}/tmp
+- {"On Windows, the Bash tool usually runs Git Bash. Use POSIX shell syntax there; do not use cmd.exe or PowerShell syntax such as `cd /d`, `dir`, `type`, or here-strings." if os.name == "nt" else "Use POSIX shell syntax in Bash commands."}
 - YOU **MUST FOLLOW THE INSTRUCTIONS DIRECTLY**
 
 ## Code Style Guidelines
@@ -134,6 +147,7 @@ class Base:
         Args:
             name: The name identifier for the agent.
         """
+        _ensure_agent_workspace()
         self.name = name
         with Base._class_lock:
             self.id = Base.agent_counter

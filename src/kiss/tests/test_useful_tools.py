@@ -14,9 +14,12 @@ from kiss.agents.sorcar.useful_tools import (
     _detect_shell_prefix,
     _extract_command_names,
     _extract_leading_command_name,
+    _rewrite_windows_bash_command,
     _strip_heredocs,
     _truncate_output,
 )
+
+_WINDOWS_WITH_GIT = os.name == "nt" and shutil.which("git") is not None
 
 # Build shell commands with Python so tests are portable across cmd/sh.
 
@@ -168,6 +171,38 @@ class TestUsefulTools:
         assert "line9" in result
         assert "line10" not in result
 
+    def test_read_non_utf8_text_uses_lossy_fallback(self, tools):
+        ut, test_dir = tools
+        test_file = test_dir / "legacy.md"
+        test_file.write_bytes(b"alpha\x9dbeta")
+
+        result = ut.Read(str(test_file))
+
+        assert "alpha" in result
+        assert "beta" in result
+        assert "Error:" not in result
+
+    def test_read_binary_file_reports_error(self, tools):
+        ut, test_dir = tools
+        test_file = test_dir / "binary.bin"
+        test_file.write_bytes(b"\x00\x01\x02")
+
+        result = ut.Read(str(test_file))
+
+        assert result == "Error: Binary file cannot be displayed as text"
+
+    @pytest.mark.skipif(not _WINDOWS_WITH_GIT, reason="requires Windows with git installed")
+    def test_read_non_utf8_text_no_charmap_error_on_windows(self, tools):
+        ut, test_dir = tools
+        test_file = test_dir / "windows-legacy.md"
+        test_file.write_bytes(b"alpha\x9dbeta")
+
+        result = ut.Read(str(test_file))
+
+        assert "Error:" not in result
+        assert "alpha" in result
+        assert "beta" in result
+
     def test_write_success(self, tools):
         ut, test_dir = tools
         f = test_dir / "new_file.txt"
@@ -292,6 +327,49 @@ class TestShellSelection:
             which=lambda name: "/bin/sh" if name == "sh" else None,
         )
         assert shell == ["/bin/sh", "-c"]
+
+
+class TestWindowsBashRewriting:
+    def test_rewrites_cd_drive_prefix_for_git_bash(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        command = r"cd /d D:\github\graphedit && python - <<'PY'"
+        rewritten = _rewrite_windows_bash_command(
+            command,
+            [r"C:\Program Files\Git\bin\bash.exe", "-lc"],
+        )
+        assert rewritten.startswith("cd /d/github/graphedit &&")
+
+    def test_rewrites_quoted_cd_drive_prefix_for_git_bash(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        command = r'cd /d "D:\github\my repo" && pwd'
+        rewritten = _rewrite_windows_bash_command(
+            command,
+            [r"C:\Program Files\Git\bin\bash.exe", "-lc"],
+        )
+        assert rewritten.startswith("cd '/d/github/my repo' &&")
+
+    def test_keeps_cd_drive_prefix_for_cmd_shell(self, monkeypatch):
+        monkeypatch.setattr(os, "name", "nt")
+        command = r"cd /d D:\github\graphedit && dir"
+        rewritten = _rewrite_windows_bash_command(
+            command,
+            [r"C:\Windows\System32\cmd.exe", "/c"],
+        )
+        assert rewritten == command
+
+    @pytest.mark.skipif(not _WINDOWS_WITH_GIT, reason="requires Windows with git installed")
+    def test_bash_executes_cmd_style_cd_prefix_under_windows_git_bash(self, tools):
+        ut, test_dir = tools
+        if ut.shell_prefix[-1] != "-lc":
+            pytest.skip("requires Git Bash shell selection")
+
+        result = ut.Bash(
+            f'cd /d {test_dir} && python -c "print(123)"',
+            "windows git bash rewrite",
+        )
+
+        assert "Error:" not in result
+        assert "123" in result
 
 
 class TestExtractCommandNames:

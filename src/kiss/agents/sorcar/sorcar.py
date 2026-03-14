@@ -7,6 +7,7 @@ import base64
 import hashlib
 import http.server
 import json
+import locale
 import logging
 import os
 import queue
@@ -120,6 +121,26 @@ def _clean_llm_output(text: str) -> str:
     return text.strip().strip('"').strip("'")
 
 
+def _read_text_file_content(path: str) -> str:
+    """Read a text file with lenient fallback for local legacy encodings."""
+    raw = Path(path).read_bytes()
+    if b"\x00" in raw:
+        raise ValueError("Binary file cannot be displayed as text")
+
+    encodings: list[str] = []
+    for encoding in ("utf-8", "utf-8-sig", locale.getpreferredencoding(False) or "utf-8"):
+        if encoding not in encodings:
+            encodings.append(encoding)
+
+    for encoding in encodings:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            logger.debug("Exception caught", exc_info=True)
+
+    return raw.decode(encodings[-1], errors="replace")
+
+
 def _new_utility_agent(name: str) -> KISSAgent:
     """Create a non-task utility agent without trajectory persistence."""
     agent = KISSAgent(name)
@@ -191,6 +212,7 @@ def _collect_listening_pids(port: int) -> set[int]:
     """Return process IDs listening on localhost TCP `port` for current platform."""
     pids: set[int] = set()
     if os.name == "nt":
+        should_finalize = True
         try:
             # netstat output is locale-dependent. Avoid state-text matching and
             # identify listeners by foreign address 0 and target local port.
@@ -985,7 +1007,6 @@ def run_chatbot(
             printer._thread_local.stop_event = None
             chat_events = printer.stop_recording()
             _append_task_to_md(task, result_text)
-            should_finalize = False
             with running_lock:
                 if agent_thread is not current_thread:
                     # Stopped externally; stop_agent already broadcast
@@ -993,47 +1014,50 @@ def run_chatbot(
                     _set_latest_chat_events(
                         chat_events, task=task, result=result_summary,
                     )
-                    return
-                running = False
-                agent_thread = None
-            # Broadcast AFTER setting running=False so clients can
-            # immediately submit a new task without getting a 409.
-            chat_events.append(done_event)
-            printer.broadcast(done_event)
-            if done_event.get("type") == "task_done":
-                try:
-                    generate_followup(task, result_text)
-                except Exception:  # pragma: no cover – LLM API failure
-                    logger.debug("Exception caught", exc_info=True)
-            _set_latest_chat_events(
-                chat_events, task=task, result=result_summary,
-            )
+                    should_finalize = False
+                else:
+                    running = False
+                    agent_thread = None
+        if not should_finalize:
+            return
+        # Broadcast AFTER setting running=False so clients can
+        # immediately submit a new task without getting a 409.
+        chat_events.append(done_event)
+        printer.broadcast(done_event)
+        if done_event.get("type") == "task_done":
             try:
-                merge_result = _prepare_merge_view(
-                    actual_work_dir,
-                    cs_data_dir,
-                    pre_hunks,
-                    pre_untracked,
-                    pre_file_hashes,
-                )
-                if merge_result.get("status") == "opened":
-                    with running_lock:
-                        merging = True
-                    printer.broadcast({"type": "merge_started"})
-            except Exception:  # pragma: no cover – merge view error
-                if _should_warn_no_changes(done_event, merge_result):
-                    printer.broadcast(
-                        {
-                            "type": "system_output",
-                            "text": (
-                                "Task reported completion but no file changes were detected. "
-                                "Review the result summary for hallucinated completion."
-                            ),
-                        }
-                    )
-            except Exception:  # pragma: no cover – merge view error
+                generate_followup(task, result_text)
+            except Exception:  # pragma: no cover – LLM API failure
                 logger.debug("Exception caught", exc_info=True)
-            refresh_file_cache()
+        _set_latest_chat_events(
+            chat_events, task=task, result=result_summary,
+        )
+        try:
+            merge_result = _prepare_merge_view(
+                actual_work_dir,
+                cs_data_dir,
+                pre_hunks,
+                pre_untracked,
+                pre_file_hashes,
+            )
+            if merge_result.get("status") == "opened":
+                with running_lock:
+                    merging = True
+                printer.broadcast({"type": "merge_started"})
+        except Exception:  # pragma: no cover – merge view error
+            if _should_warn_no_changes(done_event, merge_result):
+                printer.broadcast(
+                    {
+                        "type": "system_output",
+                        "text": (
+                            "Task reported completion but no file changes were detected. "
+                            "Review the result summary for hallucinated completion."
+                        ),
+                    }
+                )
+        except Exception:  # pragma: no cover – merge view error
+            logger.debug("Exception caught", exc_info=True)
+        refresh_file_cache()
 
     def stop_agent() -> bool:
         """Kill the current agent thread and reset state for a new task.
@@ -1921,8 +1945,7 @@ def run_chatbot(
         if not fpath or not os.path.isfile(fpath):
             return JSONResponse({"error": "File not found"}, status_code=404)
         try:
-            with open(fpath, encoding="utf-8") as f:
-                content = f.read()
+            content = _read_text_file_content(fpath)
             return JSONResponse({"content": content})
         except Exception as e:  # pragma: no cover – encoding error
             logger.debug("Exception caught", exc_info=True)

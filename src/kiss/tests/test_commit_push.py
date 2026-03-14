@@ -1,12 +1,19 @@
 """Tests for commit author attribution and push functionality."""
 
+import ast
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from kiss.agents.sorcar.chatbot_ui import CHATBOT_JS, _build_html
 from kiss.agents.sorcar.sorcar import _resolve_requested_file_path
+
+_WINDOWS_WITH_GIT = os.name == "nt" and shutil.which("git") is not None
 
 
 def test_commit_author_in_assistant_source():
@@ -73,6 +80,36 @@ def test_auth_route_in_assistant_source():
 
     source = inspect.getsource(sorcar)
     assert 'Route("/auth"' in source
+
+
+def test_sorcar_source_has_no_return_in_finally_blocks():
+    """Avoid SyntaxWarning and exception-swallowing control flow in sorcar.py."""
+    source = Path("src/kiss/agents/sorcar/sorcar.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            assert not any(isinstance(stmt, ast.Return) for stmt in ast.walk(ast.Module(body=node.finalbody, type_ignores=[])))
+
+
+@pytest.mark.skipif(not _WINDOWS_WITH_GIT, reason="requires Windows with git installed")
+def test_sorcar_help_starts_without_syntax_warning_on_windows():
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error::SyntaxWarning",
+            "src/kiss/agents/sorcar/sorcar.py",
+            "--help",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
 
 
 def test_resolve_requested_file_path_relative():

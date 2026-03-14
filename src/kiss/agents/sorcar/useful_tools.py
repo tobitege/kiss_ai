@@ -1,5 +1,6 @@
 """Useful tools for agents: file editing and bash execution."""
 
+import locale
 import logging
 import os
 import re
@@ -30,6 +31,26 @@ def _truncate_output(output: str, max_chars: int) -> str:
     if tail:
         return output[:head] + msg + output[-tail:]
     return output[:head] + msg
+
+
+def _read_text_with_fallback(path: Path) -> str:
+    """Read a text file with UTF-8 first and local-encoding fallback."""
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        raise ValueError("Binary file cannot be displayed as text")
+
+    encodings: list[str] = []
+    for encoding in ("utf-8", "utf-8-sig", locale.getpreferredencoding(False) or "utf-8"):
+        if encoding not in encodings:
+            encodings.append(encoding)
+
+    for encoding in encodings:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            logger.debug("Exception caught", exc_info=True)
+
+    return raw.decode(encodings[-1], errors="replace")
 
 
 def _detect_shell_prefix(
@@ -90,6 +111,38 @@ def _resolve_tool_path(file_path: str) -> Path:
     if os.name == "nt" and file_path.startswith("/") and normalized == file_path:
         raise ValueError(f"Invalid path on Windows: {file_path}")
     return Path(normalized).resolve()
+
+
+def _to_git_bash_drive_path(path: str) -> str:
+    """Convert a native Windows drive path to a Git-Bash-compatible path."""
+    normalized = _normalize_windows_drive_path(path)
+    match = re.match(r"^([a-zA-Z]):(?:[\\/](.*))?$", normalized)
+    if not match:
+        return normalized.replace("\\", "/")
+    drive = match.group(1).lower()
+    tail = (match.group(2) or "").replace("\\", "/")
+    return f"/{drive}/{tail}" if tail else f"/{drive}"
+
+
+def _rewrite_windows_bash_command(command: str, shell_prefix: list[str]) -> str:
+    """Rewrite common cmd.exe-only path patterns before running under Windows bash."""
+    if os.name != "nt" or not shell_prefix or shell_prefix[-1] != "-lc":
+        return command
+
+    match = re.match(
+        r"^(?P<prefix>\s*)cd\s+/d\s+(?P<path>(?:\"[^\"]+\"|'[^']+'|[^&;|]+?))(?P<suffix>\s*(?:&&|\|\||;).*)?$",
+        command,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return command
+
+    raw_path = match.group("path").strip()
+    if len(raw_path) >= 2 and raw_path[0] == raw_path[-1] and raw_path[0] in {"'", '"'}:
+        raw_path = raw_path[1:-1]
+    rewritten_path = shlex.quote(_to_git_bash_drive_path(raw_path))
+    suffix = match.group("suffix") or ""
+    return f"{match.group('prefix')}cd {rewritten_path}{suffix}"
 
 
 EDIT_SCRIPT = r"""
@@ -492,8 +545,7 @@ class UsefulTools:
         """
         try:
             resolved = _resolve_tool_path(file_path)
-            with resolved.open("r", newline="") as f:
-                text = f.read()
+            text = _read_text_with_fallback(resolved)
             lines = text.splitlines(keepends=True)
             if len(lines) > max_lines:
                 return (
@@ -634,6 +686,7 @@ class UsefulTools:
                 logger.debug("Exception caught", exc_info=True)
 
     def _start_bash_process(self, command: str) -> subprocess.Popen[str]:
+        command = _rewrite_windows_bash_command(command, self.shell_prefix)
         if os.name == "nt":
             return subprocess.Popen(
                 [*self.shell_prefix, command],

@@ -304,6 +304,21 @@ class TestServerGetFileContent:
         assert resp.status_code == 200
         assert "content" in resp.json()
 
+    def test_get_file_content_non_utf8_text_uses_lossy_fallback(self, server):
+        base_url, work_dir, _ = server
+        path = os.path.join(work_dir, "legacy.md")
+        Path(path).write_bytes(b"alpha\x9dbeta")
+
+        resp = requests.get(
+            f"{base_url}/get-file-content?path={path}",
+            timeout=5,
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "alpha" in data["content"]
+        assert "beta" in data["content"]
+
     def test_get_file_content_not_found(self, server):
         base_url, _, _ = server
         resp = requests.get(
