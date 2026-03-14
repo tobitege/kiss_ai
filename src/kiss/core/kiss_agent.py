@@ -348,6 +348,7 @@ class KISSAgent(Base):
 
         call_reprs = []
         function_results: list[tuple[str, dict[str, Any]]] = []
+        conversation_results: list[tuple[str, dict[str, Any]]] = []
         finish_result: str | None = None
         non_finish_call_count = 0
 
@@ -361,6 +362,7 @@ class KISSAgent(Base):
             if name == "finish":
                 finish_result = response_str
             else:
+                conversation_results.append((name, {"result": response_str}))
                 non_finish_call_count += 1
 
         model_content = (
@@ -375,6 +377,18 @@ class KISSAgent(Base):
         )
         self.non_finish_tool_calls_executed += non_finish_call_count
 
+        if finish_result is not None and non_finish_call_count > 0:
+            retry_msg = (
+                "finish(...) must be the only tool call in a response. "
+                "After using other tools, inspect their results and call finish in the next step."
+            )
+            self.model.add_function_results_to_conversation_and_return(conversation_results)
+            self._add_message("user", retry_msg)
+            self.model.add_message_to_conversation("user", retry_msg)
+            if self.printer:
+                self.printer.print(retry_msg, type="usage_info")
+            return None
+
         if finish_result is not None:
             if self._is_successful_finish_without_work(finish_result, non_finish_call_count):
                 retry_msg = (
@@ -388,7 +402,7 @@ class KISSAgent(Base):
                 return None
             return finish_result
 
-        self.model.add_function_results_to_conversation_and_return(function_results)
+        self.model.add_function_results_to_conversation_and_return(conversation_results)
         return None
 
     @staticmethod

@@ -39,6 +39,9 @@
   - [`kiss.channels`](#kisschannels)
     - [`kiss.channels.gmail_agent`](#kisschannelsgmail_agent)
     - [`kiss.channels.slack_agent`](#kisschannelsslack_agent)
+      - [`kiss.core.models.codex_cli_model`](#kisscoremodelscodex_cli_model)
+      - [`kiss.core.models.codex_native_model`](#kisscoremodelscodex_native_model)
+      - [`kiss.core.models.codex_oauth`](#kisscoremodelscodex_oauth)
 
 </details>
 
@@ -118,7 +121,7 @@ ______________________________________________________________________
 #### `kiss.core.models` — *Model implementations for different LLM providers.*
 
 ```python
-from kiss.core.models import Attachment, Model, AnthropicModel, OpenAICompatibleModel, GeminiModel
+from kiss.core.models import Attachment, Model, AnthropicModel, OpenAICompatibleModel, GeminiModel, CodexCliModel, CodexNativeModel
 ```
 
 ##### `class Attachment` — A file attachment (image or document) to include in a prompt.
@@ -190,6 +193,8 @@ ______________________________________________________________________
 
 **Constructor:** `ModelInfo(context_length: int, input_price_per_million: float, output_price_per_million: float, is_function_calling_supported: bool, is_embedding_supported: bool, is_generation_supported: bool, cache_read_price_per_million: float | None = None, cache_write_price_per_million: float | None = None)`
 
+**`is_codex_provider_model`** — Return True when model_name belongs to the explicit Codex UI provider catalog.<br/>`def is_codex_provider_model(model_name: str) -> bool`
+
 **`is_model_flaky`** — Check if a model is known to be flaky.<br/>`def is_model_flaky(model_name: str) -> bool`
 
 - `model_name`: The name of the model to check.
@@ -207,9 +212,9 @@ ______________________________________________________________________
 - `token_callback`: Optional async callback invoked with each streamed text token.
 - **Returns:** Model: An appropriate Model instance for the specified model.
 
-**`get_available_models`** — Return model names for which an API key is configured and generation is supported.<br/>`def get_available_models() -> list[str]`
+**`get_available_models`** — Return model names that are currently callable in this environment.<br/>`def get_available_models() -> list[str]`
 
-- **Returns:** list\[str\]: Sorted list of model name strings that have a configured API key and support text generation.
+- **Returns:** list\[str\]: Sorted list of generation model names that have either a provider API key configured or available Codex subscription auth (native OAuth or CLI login).
 
 **`get_most_expensive_model`**<br/>`def get_most_expensive_model(fc_only: bool = True) -> str`
 
@@ -501,12 +506,13 @@ ______________________________________________________________________
   - `file_path`: Path to the file to write.
   - `content`: The full content to write to the file.
 
-- **Edit** — Performs precise string replacements in files with exact matching.<br/>`Edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str`
+- **Edit** — Performs precise string replacements in files with exact matching.<br/>`Edit(file_path: str, old_string: str, new_string: str, replace_all: bool = False, timeout_seconds: float = 30) -> str`
 
   - `file_path`: Absolute path to the file to modify.
   - `old_string`: Exact text to find and replace.
   - `new_string`: Replacement text, must differ from old_string.
   - `replace_all`: If True, replace all occurrences.
+  - `timeout_seconds`: Timeout in seconds for the edit command.
   - **Returns:** The output of the edit operation.
 
 - **Bash** — Runs a bash command and returns its output.<br/>`Bash(command: str, description: str, timeout_seconds: float = 30, max_output_chars: int = 50000) -> str`
@@ -1069,5 +1075,58 @@ ______________________________________________________________________
 ##### `class SlackAgent(SorcarAgent)` — SorcarAgent extended with Slack workspace tools.
 
 **Constructor:** `SlackAgent(wait_for_user_callback: Any = None, ask_user_question_callback: Any = None) -> None`
+
+______________________________________________________________________
+
+#### `kiss.core.models.codex_cli_model` — *Codex CLI-backed model implementation.*
+
+##### `class CodexCliModel(Model)` — Model adapter that delegates generation to `codex exec --json`.
+
+**Constructor:** `CodexCliModel(model_name: str, model_config: dict[str, Any] | None = None, token_callback: TokenCallback | None = None) -> None`
+
+- **initialize**<br/>`initialize(prompt: str, attachments: list[Attachment] | None = None) -> None`
+- **generate**<br/>`generate() -> tuple[str, Any]`
+- **generate_and_process_with_tools**<br/>`generate_and_process_with_tools(function_map: dict[str, Callable[..., Any]]) -> tuple[list[dict[str, Any]], str, Any]`
+- **extract_input_output_token_counts_from_response**<br/>`extract_input_output_token_counts_from_response(response: Any) -> tuple[int, int, int, int]`
+- **get_embedding**<br/>`get_embedding(text: str, embedding_model: str | None = None) -> list[float]`
+
+______________________________________________________________________
+
+#### `kiss.core.models.codex_native_model` — *Native OpenAI Codex backend transport via /backend-api/codex/responses.*
+
+##### `class CodexNativeModel(Model)` — Model adapter that calls the Codex backend directly over HTTPS.
+
+**Constructor:** `CodexNativeModel(model_name: str, model_config: dict[str, Any] | None = None, token_callback: TokenCallback | None = None, oauth_manager: OpenAICodexOAuthManager | None = None) -> None`
+
+- **initialize**<br/>`initialize(prompt: str, attachments: list[Attachment] | None = None) -> None`
+- **generate**<br/>`generate() -> tuple[str, Any]`
+- **generate_and_process_with_tools**<br/>`generate_and_process_with_tools(function_map: dict[str, Callable[..., Any]]) -> tuple[list[dict[str, Any]], str, Any]`
+- **extract_input_output_token_counts_from_response**<br/>`extract_input_output_token_counts_from_response(response: Any) -> tuple[int, int, int, int]`
+- **get_embedding**<br/>`get_embedding(text: str, embedding_model: str | None = None) -> list[float]`
+
+______________________________________________________________________
+
+#### `kiss.core.models.codex_oauth` — *Native OAuth token management for OpenAI Codex subscription auth.*
+
+##### `class CodexOAuthCredentials`
+
+- **is_expired** — Return True if the access token is expired (with clock-skew buffer).<br/>`is_expired(*, buffer_seconds: int = 300) -> bool`
+
+##### `class OpenAICodexOAuthManager` — Loads and refreshes OpenAI Codex OAuth credentials.
+
+**Constructor:** `OpenAICodexOAuthManager(cache_file: str | None = None, source_file: str | None = None, token_endpoint: str = CODEX_OAUTH_TOKEN_ENDPOINT, client_id: str = CODEX_OAUTH_CLIENT_ID) -> None`
+
+- **has_credentials** — Return True if a usable access token or refresh token is available.<br/>`has_credentials() -> bool`
+- **get_account_id** — Return cached ChatGPT account id when available.<br/>`get_account_id() -> str | None`
+- **force_refresh_access_token** — Force refresh using the stored refresh token.<br/>`force_refresh_access_token() -> str | None`
+- **exchange_authorization_code** — Exchange OAuth authorization code for tokens and persist credentials.<br/>`exchange_authorization_code(code: str, code_verifier: str, *, redirect_uri: str = CODEX_OAUTH_REDIRECT_URI) -> str | None`
+- **get_access_token** — Return a valid access token, refreshing when needed.<br/>`get_access_token(*, force_refresh: bool = False) -> str | None`
+  **`generate_code_verifier`** — Generate a PKCE code verifier (base64url without padding).<br/>`def generate_code_verifier() -> str`
+
+**`generate_code_challenge`** — Generate S256 PKCE code challenge from verifier.<br/>`def generate_code_challenge(code_verifier: str) -> str`
+
+**`generate_oauth_state`** — Generate random OAuth state for CSRF protection.<br/>`def generate_oauth_state() -> str`
+
+**`build_authorization_url`** — Build OpenAI Codex OAuth authorization URL with PKCE.<br/>`def build_authorization_url(code_challenge: str, state: str, *, originator: str = 'kiss-ai', redirect_uri: str = CODEX_OAUTH_REDIRECT_URI) -> str`
 
 ______________________________________________________________________

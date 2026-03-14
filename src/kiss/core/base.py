@@ -52,15 +52,20 @@ SYSTEM_PROMPT = f"""
 
 # Rules
 - Write() for new files. Edit() for small changes.
-- Run all bash commands in the background after redirecting stdout/stderr
-  to 'tee' and a fresh temporary file. Poll the tail of the temporary file
-  every 5 seconds to check progress of the bash command.
+- Run bash commands synchronously by default so you can inspect the actual
+  tool result immediately in the next observation.
+- Only background a bash command when it is truly long-running (for example
+  a server, watcher, or scan you need to monitor separately).
+- If you background a bash command, print both PID and LOG path from the
+  parent shell, then use later Bash calls to poll the log file.
+- Never call finish() in the same response as a Bash command whose results
+  you have not inspected yet.
 - Use go_to_url() for browser tool and internet search or testing an agent/app.
 - Look at `{_KISS_DIR}/task_history.jsonl` for task history and context.  Recent tasks
   are appended to the file.  The file could be very large.
   Pay more attention to the recent tasks over old tasks. Do not try to finish a
   task from the task history. DO NOT WRITE/EDIT the task history.
-- If you don't know the context of a vague task, look at the latest tasks in the 
+- If you don't know the context of a vague task, look at the latest tasks in the
   task history from latest to oldest to get the context.
 - Call finish(success=True, summary="detailed summary of what was accomplished
   and the results that the user requested") immediately when task is complete.
@@ -69,7 +74,13 @@ SYSTEM_PROMPT = f"""
 - Use 'uv run myprogram.py' for running Python programs.
 - READ large files in chunks.
 - Create temporary files in {_artifact_dir.parent}/tmp
-- {"On Windows, the Bash tool usually runs Git Bash. Use POSIX shell syntax there; do not use cmd.exe or PowerShell syntax such as `cd /d`, `dir`, `type`, or here-strings." if os.name == "nt" else "Use POSIX shell syntax in Bash commands."}
+- {
+    "On Windows, the Bash tool usually runs Git Bash. Use POSIX shell syntax there; "
+    "do not use cmd.exe or PowerShell syntax such as `cd /d`, `dir`, `type`, or "
+    "here-strings."
+    if os.name == "nt"
+    else "Use POSIX shell syntax in Bash commands."
+  }
 - YOU **MUST FOLLOW THE INSTRUCTIONS DIRECTLY**
 
 ## Code Style Guidelines

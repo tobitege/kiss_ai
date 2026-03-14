@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from kiss.core.base import Base
+from kiss.core.base import SYSTEM_PROMPT, Base
 from kiss.core.kiss_agent import KISSAgent
 from kiss.core.kiss_error import KISSError
 
@@ -142,7 +142,7 @@ def test_success_finish_without_real_tool_work_is_rejected() -> None:
     assert "before any non-finish tools were executed" in model.added_messages[-1][1]
 
 
-def test_success_finish_after_non_finish_tool_is_allowed() -> None:
+def test_finish_after_non_finish_tool_in_same_turn_is_rejected() -> None:
     def Write(path: str, content: str) -> str:  # noqa: N802
         return f"wrote {path} ({len(content)} chars)"
 
@@ -162,6 +162,48 @@ def test_success_finish_after_non_finish_tool_is_allowed() -> None:
         ]
     )
     agent = _make_agent(model, {"finish": _finish, "Write": Write})
-    result = agent._execute_step()
-    parsed = yaml.safe_load(result)
-    assert parsed["success"] is True
+    assert agent._execute_step() is None
+    assert model.function_results == [
+        ("Write", {"result": "wrote C:/tmp/main.rs (12 chars)"})
+    ]
+    assert model.added_messages
+    assert "finish(...) must be the only tool call in a response" in model.added_messages[-1][1]
+
+
+def test_continue_finish_after_bash_in_same_turn_is_rejected() -> None:
+    def Bash(command: str, description: str) -> str:  # noqa: N802
+        return "9177"
+
+    model = _FakeModel(
+        [
+            (
+                [
+                    {
+                        "name": "Bash",
+                        "arguments": {"command": "long scan", "description": "scan repo"},
+                    },
+                    {
+                        "name": "finish",
+                        "arguments": {
+                            "success": False,
+                            "is_continue": True,
+                            "summary": "Need the polled output from PID 9177.",
+                        },
+                    },
+                ],
+                "tool calls",
+                {"usage": {"input_tokens": 90, "cached_input_tokens": 0, "output_tokens": 25}},
+            )
+        ]
+    )
+    agent = _make_agent(model, {"finish": _finish, "Bash": Bash})
+    assert agent._execute_step() is None
+    assert model.function_results == [("Bash", {"result": "9177"})]
+    assert model.added_messages
+    assert "call finish in the next step" in model.added_messages[-1][1]
+
+
+def test_system_prompt_prefers_synchronous_bash_and_forbids_same_turn_finish() -> None:
+    assert "Run bash commands synchronously by default" in SYSTEM_PROMPT
+    assert "Run all bash commands in the background" not in SYSTEM_PROMPT
+    assert "Never call finish() in the same response as a Bash command" in SYSTEM_PROMPT
